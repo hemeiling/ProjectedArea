@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产线布局投影面积估算</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span data-i18n="app.title">产线布局投影面积估算</span>
+  </div>
+  <span class="pill" id="ocrPill" hidden></span>
+  <div class="langswitch" role="group" data-i18n-aria="lang.label" aria-label="界面语言">
+    <button type="button" data-lang="zh" aria-pressed="true">中文</button>
+    <button type="button" data-lang="en" aria-pressed="false">EN</button>
+  </div>
+</header>
+
+<main class="page">
+  <p class="lede" data-i18n="app.subtitle"></p>
+
+  <!-- 1 上传 -->
+  <section class="card" id="uploadCard">
+    <h2 data-i18n="upload.title"></h2>
+    <label class="drop" id="drop">
+      <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
+      <span class="drop-icon" aria-hidden="true">PDF</span>
+      <span data-i18n="upload.drop"></span>
+    </label>
+    <p class="note" data-i18n="upload.req"></p>
+
+    <div class="table-wrap" id="fileTableWrap" hidden>
+      <table class="files">
+        <thead>
+          <tr>
+            <th data-i18n="col.file"></th>
+            <th data-i18n="col.name"></th>
+            <th data-i18n="col.ref"></th>
+            <th data-i18n="col.mpp"></th>
+            <th class="num"></th>
+          </tr>
+        </thead>
+        <tbody id="fileRows"></tbody>
+      </table>
+      <p class="note"><span data-i18n="ref.hint"></span>　·　<span data-i18n="mpp.hint"></span></p>
+    </div>
+
+    <details class="params" id="paramsBox">
+      <summary data-i18n="params.title"></summary>
+      <div class="param-grid" id="paramGrid"></div>
+      <p class="note" data-i18n="params.shareHint"></p>
+      <p class="note"><span data-i18n="params.laborSource"></span>：<span id="laborSource"></span></p>
+      <p class="note"><span data-i18n="params.ratesSource"></span>：<span id="ratesSource"></span></p>
+    </details>
+
+    <div class="actions">
+      <button type="button" class="primary" id="runBtn" disabled data-i18n="run"></button>
+      <span class="error" id="uploadError" role="alert"></span>
+    </div>
+  </section>
+
+  <!-- 进度 -->
+  <section class="card" id="progressCard" hidden aria-live="polite">
+    <div class="progress-head">
+      <strong id="progressText"></strong>
+      <span class="muted" id="progressElapsed"></span>
+    </div>
+    <div class="bar"><div class="bar-fill" id="progressFill"></div></div>
+  </section>
+
+  <!-- 2 结果 -->
+  <section class="card" id="resultCard" hidden>
+    <div class="result-head">
+      <h2 data-i18n="results.title"></h2>
+      <div class="result-actions">
+        <a class="button primary" id="downloadBtn" href="#" download data-i18n="results.download"></a>
+        <button type="button" id="newBtn" data-i18n="results.new"></button>
+      </div>
+    </div>
+    <p class="note"><span data-i18n="results.downloadNote"></span> <span data-i18n="results.share"></span></p>
+
+    <div id="dimBox" class="alert alert-amber" hidden>
+      <strong data-i18n="dim.title"></strong>
+      <p id="dimMsg"></p>
+      <div class="dim-list" id="dimList"></div>
+      <div class="actions">
+        <button type="button" class="primary" id="dimBtn" data-i18n="dim.continue"></button>
+        <span class="error" id="dimError" role="alert"></span>
+      </div>
+    </div>
+
+    <div id="failedBox" class="alert alert-red" hidden>
+      <strong data-i18n="failed.title"></strong>
+      <p id="failedMsg"></p>
+      <details id="failedDetailBox"><summary data-i18n="failed.detail"></summary><pre id="failedDetail"></pre></details>
+    </div>
+
+    <div id="warnBox" class="alert alert-amber" hidden>
+      <strong data-i18n="warnings.title"></strong>
+      <ul id="warnList"></ul>
+    </div>
+
+    <div id="resultBody">
+      <div class="kpis" id="kpis"></div>
+
+      <h3 data-i18n="summary.title"></h3>
+      <div class="table-wrap"><table class="summary" id="summaryTable"></table></div>
+
+      <div id="drawings"></div>
+
+      <details class="params" id="recalcBox">
+        <summary data-i18n="recalc.title"></summary>
+        <div class="param-grid" id="recalcGrid"></div>
+        <p class="note" data-i18n="recalc.note"></p>
+        <div class="actions">
+          <button type="button" id="recalcBtn" data-i18n="recalc.button"></button>
+          <span class="ok" id="recalcMsg" role="status"></span>
+          <span class="error" id="recalcError" role="alert"></span>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <section class="card" id="libraryCard">
+    <h2 class="h-small" data-i18n="library.title"></h2>
+    <p class="note" data-i18n="library.note"></p>
+    <ul class="recent library" id="libraryList"></ul>
+  </section>
+
+  <section class="card">
+    <h2 class="h-small" data-i18n="recent.title"></h2>
+    <ul class="recent" id="recentList"></ul>
+  </section>
+
+  <section class="method">
+    <h2 class="h-small" data-i18n="method.title"></h2>
+    <p data-i18n="method.body"></p>
+  </section>
+</main>
+
+<dialog id="lightbox">
+  <form method="dialog"><button class="close" aria-label="close">×</button></form>
+  <img id="lightboxImg" alt="">
+</dialog>
+
+<script src="/static/i18n.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+# ============================================================
+# 智能装柜估算 —— 配置文件
+# 新增一张图纸：只需在 drawings 中加一条（PDF 路径 + 图上总尺寸）
+# extraction / packing / freight 为通用参数，一般无需修改
+# ============================================================
+
+drawings:
+  - id: "101"
+    name: "GLTR-101 Power Module Line (30 PPM)"
+    pdf: "drawings/101-SSY1070-GR-30PPM-Simplified-v3.6.pdf"
+    reference_length_mm: 75000      # 图上最长尺寸线的标注值（总长）
+    station_overrides:              # 可选：修正 OCR 识别错误的工位名称
+      - {op: "OP-05", name: "Module Stacking"}
+    # mm_per_pt: 63.76              # 可选：若自动识别失败，直接给比例
+  - id: "102"
+    name: "CAXM-102 CTP Line (14 JPH)"
+    pdf: "drawings/102-NSY1540-XM-P1-CIR-14JPH-Simplified-v3.2.pdf"
+    reference_length_mm: 115000
+    station_overrides:              # OCR 名称人工复核后修正（编号以图纸为准）
+      - {op: "OP-01", name: "Cell Loading"}
+      - {op: "OP-05", name: "Module Stacking"}
+      - {op: "OP-06", match: "Insulation", name: "Insulation Test"}
+      - {op: "OP-06", match: "BOX", name: "BOX Cleaning & Gluing"}
+      - {op: "OP-11", name: "BOX Preparation"}
+      - {op: "OP-16", name: "BOX Cleaning"}
+      - {op: "OP-18", name: "BDU Installation"}
+      - {op: "OP-20", name: "Pre-welding Addressing"}
+      - {op: "OP-21", name: "Terminal Cleaning"}
+      - {op: "OP-22", name: "CCS Welding"}
+      - {op: "OP-23", name: "CCS Post-weld Inspection"}
+      - {op: "OP-24", name: "FPC Paste Taping"}
+      - {op: "OP-26", name: "FPC Post-weld Inspection"}
+      - {op: "OP-27", name: "BMS Installation"}
+      - {op: "OP-28", name: "BDU Copper Installation"}
+      - {op: "OP-29", name: "BOX Copper Installation"}
+      - {op: "OP-30", name: "BOX Motherboard Installation"}
+      - {op: "OP-33", name: "DCR Test"}
+      - {op: "OP-37", name: "Cover Tightening"}
+      - {op: "OP-38", name: "Airtightness Test"}
+      - {op: "OP-39", name: "Appearance Inspection"}
+      - {op: "OP-40", name: "PACK Offline"}
+
+# ---------- 第一步：投影面积提取参数 ----------
+extraction:
+  render_px_per_pt: 4               # 栅格分辨率；4 ≈ 每像素 16–25 mm
+  building:
+    min_line_frac: 0.6              # 长度 ≥ 60% 总尺寸的线 = 厂房边界
+  hatch:                            # 墙体/通道的 45° 斜线填充区，区内内容全部排除
+    enabled: true
+    angle_min: 30
+    angle_max: 60
+    min_segment_mm: 1500            # 填充斜线单根长度 ≥1.5 m；设备内斜线都更短
+    close_mm: 3000                  # 斜线间距约 2–3 m，用 3 m 闭合成片
+    min_area_m2: 40                 # 小于此面积的斜线团视为设备本身的斜撑，不排除
+  exclude_colors:                   # 非设备图层颜色（RGB 0–1）
+    - [1.0, 1.0, 0.0]               # 黄色：安全围栏/虚线范围/注释
+  near_white: 0.9                   # 接近白色的线（大号水印文字）忽略
+  max_path_extent_mm: 14000         # 单条路径长于此 = 墙/轴线/尺寸线，排除
+  route_grey_range: [0.4, 0.85]     # 灰色线条可能是物流通道/AGV 路线
+  route_max_segment_mm: 4000        # 灰色直线段长于此视为通道线，排除
+  agv_circles:                      # AGV 转弯圆（OpenCV 霍夫圆检测）
+    enabled: true
+    min_radius_mm: 600
+    max_radius_mm: 1300
+    vote_threshold: 18
+  gap_close_mm: 150                 # 线条间 <150 mm 的缝隙视为同一设备
+  min_feature_mm: 250               # 宽度 <250 mm 的细线（墙线/尺寸线/通道线/箭头）去除
+  max_hole_fill_m2: 20              # 只填充 <20 m² 的封闭区（设备内部），更大的是通道围合区
+  min_group_m2: 0.25                # 小于此面积的碎片（文字、标记）忽略
+  lane_separator_frac: 0.8          # 沿线贯通 ≥80% 长度的填充带 = 线体分隔带
+  envelope_min_group_m2: 2          # 基准“总长×宽”只按 ≥2 m² 的设备块取外包矩形
+  stations:                         # 工位标签识别（OCR）与面积分摊
+    enabled: true
+    label_max_lightness: 0.1        # 只把黑色文字当作工位标签
+    title_size_factor: 3            # 字号 > 3×中位字号 = 图名，忽略
+    cluster_gap_mm: 800             # 字形间距 <0.8 m 归为同一标签
+    ocr_dpi: 600
+    min_name_letters: 4             # 无 OP 编号时，至少 4 个字母才算标签
+    column_tolerance_mm: 4000       # 横向相差 <4 m 的标签属于同一标签列
+
+# ---------- 第二步：公摊工时（业务输入，不由图纸推断）----------
+labor:
+  shared_hours_per_m2: 0.52         # 公摊工时系数（工时 / m²）
+  source: "现有《钳工/电工工时推算》表：公摊&投影面积 0.52 小时/m²"
+
+# ---------- 第二步：装箱参数（应以历史装柜数据校准）----------
+packing:
+  packaging_factor: 1.15            # 包装后面积 / 设备投影面积
+  container: {name: "40HQ", inner_length_m: 12.03, inner_width_m: 2.35, inner_height_m: 2.69, max_payload_t: 26.5}
+  floor_utilisation: {low: 0.55, high: 0.75}   # 设备不可堆叠、形状不规则
+  footprint_uncertainty: {low: 0.85, high: 1.10}
+  oversize_share: 0.10              # 需框架箱/开顶箱比例（宽>2.35 m 或 高>2.6 m）
+
+# ---------- 第三步：运费参数 ----------
+freight:
+  route: "上海 → 鹿特丹"
+  rates_usd_per_40ft:               # Drewry WCI 2026-09-10 现货价，报价前请更新
+    "上海 → 鹿特丹": 3997
+    "上海 → 热那亚": 4216
+    "上海 → 洛杉矶": 7352
+    "上海 → 纽约": 9726
+  rates_source: "Drewry World Container Index, 2026-09-10 (https://www.mtsinsights.com/summaries/10873/)"
+  flat_rack_multiplier: 2.0
+  local_charges_usd_per_box: 1500   # 起运港+目的港杂费、报关、短驳（占位，用货代报价替换）
+  insurance_pct_of_freight: 0.0

@@ -1,0 +1,12 @@
+# 客户图纸及其衍生结果（叠加图、工作簿）不进版本库
+drawings/
+results/
+# 网页版上传的 PDF 与任务结果
+data/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.claude/
+.DS_Store

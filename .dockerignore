@@ -1,0 +1,14 @@
+# 客户图纸、结果与本地数据不进镜像
+drawings/
+results/
+data/
+
+.git/
+.claude/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+.DS_Store
