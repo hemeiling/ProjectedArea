@@ -1,7 +1,8 @@
 # Render Blueprint：Dashboard → New → Blueprint → 选择本仓库。
 #
-# 实例规格：测量一张 A3 大图（如 102 图）时内存峰值实测约 3.3 GB，512 MB / 2 GB 的实例会内存不足，
-# 因此至少需要 4 GB（pro）。磁盘只在付费实例上可用；没有磁盘时，每次重启或重新部署都会清空图纸库与历史结果。
+# 实例规格：测量一张 A3 大图（如 102 图）时内存峰值实测约 3.3 GB，512 MB（含免费实例）/ 2 GB 的实例会内存不足，
+# 因此至少需要 2c-4g（4 GB，US$85/月，2026-11 Render 价格）。磁盘 US$0.25/GB·月，只在付费实例上可用；
+# 没有磁盘时，每次重启或重新部署都会清空图纸库与历史结果。
 # ACCESS_PASSWORD 在 Dashboard 中填写（不写进仓库）；设置后整个网站需要密码，/api/health 除外。
 
 services:
@@ -13,7 +14,7 @@ services:
     repo: https://github.com/hemeiling/ProjectedArea
     branch: main
     region: singapore           # 离国内用户最近的 Render 区域
-    plan: pro                   # 4 GB 内存
+    plan: 2c-4g                 # 2 CPU / 4 GB 内存
     numInstances: 1             # 任务状态在进程内：只能单实例
     healthCheckPath: /api/health
     disk:

@@ -70,7 +70,8 @@ data/jobs/<id>/                     每次估算：config.yaml（可用命令行
 
 仓库根目录有 `Dockerfile`（含 Tesseract OCR）与 `render.yaml`：Render Dashboard → **New → Blueprint** → 选择本仓库。
 
-- **实例内存 ≥ 4 GB**：测量 102 图（A3）时内存峰值实测约 3.3 GB，512 MB / 2 GB 的实例会内存不足。
+- **实例内存 ≥ 4 GB**：测量 102 图（A3）时内存峰值实测约 3.3 GB，免费实例（512 MB）和 2 GB 实例都会内存不足。
+  按 2026-11 的 Render 价格：`2c-4g` 实例 US$85/月 + 5 GB 磁盘 US$1.25/月；Hobby 工作区本身免费。
 - **持久磁盘** 挂载到 `/var/data`：否则每次重启或重新部署都会清空图纸库与历史结果（磁盘只在付费实例上可用）。
 - **访问密码**：在 Dashboard 的环境变量中设置 `ACCESS_PASSWORD`（不写进仓库）；设置后整个网站需要密码（用户名任意），`/api/health` 除外。
 - 只能单实例、单进程：任务队列与状态在进程内。
