@@ -20,6 +20,7 @@ import secrets
 import threading
 from typing import List, Optional
 
+import yaml
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -96,6 +97,32 @@ def _library_view(m):
     return dict({k: m.get(k) for k in keep}, last_job=(m.get("jobs") or [None])[-1])
 
 
+def _observed(jobs):
+    """本服务器最近的实测：测量子进程的内存峰值与每张图用时（决定服务器规格）"""
+    runs = [j["resources"]["measure"] for j in jobs
+            if (j.get("resources") or {}).get("measure") and j["resources"]["measure"].get("peak_rss_mb")]
+    if not runs:
+        return None
+    per_drawing = sorted(r["seconds"] / max(r["drawings"], 1) for r in runs)
+    return dict(runs=len(runs), peak_rss_mb=max(r["peak_rss_mb"] for r in runs),
+                seconds_per_drawing=per_drawing[len(per_drawing) // 2])
+
+
+def _storage(data_dir):
+    """数据目录各部分的实际占用 (MB)"""
+    out = {}
+    for part in ("library", "cache", "jobs"):
+        total, files = 0, 0
+        for root, _, names in os.walk(os.path.join(data_dir, part)):
+            for n in names:
+                total += os.path.getsize(os.path.join(root, n))
+                files += n.endswith(".pdf") and part == "library"
+        out[part] = round(total / 1048576, 1)
+        if part == "library":
+            out["library_files"] = files
+    return out
+
+
 def _authorized(request, password):
     """HTTP Basic：只校验密码（用户名任意），常量时间比较"""
     header = request.headers.get("authorization", "")
@@ -150,6 +177,14 @@ def create_app(data_dir=None):
                     routes=[dict(name=k, usd_per_40ft=v) for k, v in fr["rates_usd_per_40ft"].items()],
                     rates_source=fr["rates_source"], container=cfg["packing"]["container"],
                     limits=dict(max_drawings=MAX_DRAWINGS, max_file_mb=MAX_FILE_MB))
+
+    @app.get("/api/system")
+    def system():
+        """“工作流程与费用”：托管价格（参考）、本服务器实测资源、存储占用"""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "hosting.yaml"), encoding="utf-8") as f:
+            hosting = yaml.safe_load(f)
+        return dict(hosting=hosting, observed=_observed(store.recent(200)), storage=_storage(data_dir),
+                    ocr_available=J.ocr_available(), password_protected=bool(password))
 
     # ------------------------------------------------------------ 图纸库
     @app.get("/api/library")

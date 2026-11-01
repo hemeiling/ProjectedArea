@@ -192,9 +192,55 @@ dialog#lightbox .close {
   position: absolute; top: 8px; right: 8px; font-size: 20px; line-height: 1; padding: 4px 10px;
 }
 
+/* ---------- 工作流程与费用 */
+.flow { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1.25fr) 22px minmax(0, 1fr);
+        align-items: start; margin-top: 14px; }
+.flow-col { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); padding: 10px; }
+.flow-col.core { background: #EEF3F2; border-color: #C9DAD6; }
+.flow-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px 10px; }
+.flow-head b { font-size: 14px; }
+.flow-head span { font-size: 12px; color: var(--ink-2); }
+.flow-arrow { align-self: center; height: 2px; background: var(--line-2); position: relative; margin: 0 3px; }
+.flow-arrow::after { content: ""; position: absolute; right: -2px; top: -5px; border: 6px solid transparent;
+                     border-left-color: var(--line-2); border-right: 0; }
+.step { display: flex; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+        padding: 8px 10px; margin-top: 6px; position: relative; }
+.step + .step::before { content: ""; position: absolute; left: 18px; top: -7px; height: 6px; border-left: 2px solid var(--line-2); }
+.step.cost { border: 1.5px solid var(--red); background: var(--red-soft); }
+.step.crit { border: 1.5px solid var(--amber); background: var(--amber-soft); }
+.step-n { font: 600 11px var(--mono); color: var(--ink-3); min-width: 24px; padding-top: 2px; }
+.step-body { min-width: 0; }
+.step-body b { font-size: 13px; }
+.step-body p { margin: 2px 0 6px; font-size: 12px; color: var(--ink-2); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.chips code { font: 11px var(--mono); color: var(--ink-2); background: var(--panel-2); border-radius: 4px; padding: 1px 5px;
+              overflow-wrap: anywhere; }
+.chip { font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); }
+.chip.where-browser { color: var(--blue, #3E6392); border-color: #C7D3E3; }
+.chip.where-server { color: var(--accent); border-color: #BFD6D1; }
+.chip.where-you { color: var(--amber); border-color: #E8D3AE; }
+.chip.cost, .chip.off { color: #fff; background: var(--red); border-color: var(--red); }
+.chip.crit { color: #fff; background: var(--amber); border-color: var(--amber); }
+.chip.on { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.live { margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+table.hosting tr.unfit td { color: var(--ink-3); }
+table.hosting tr.unfit td b { text-decoration: line-through; }
+.tag.bad { color: var(--red); background: var(--red-soft); border-color: transparent; }
+.sys-notes { margin: 10px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 12px; }
+.sys-notes li { margin: 3px 0; }
+.crit-note { color: #5C3D0B; font-weight: 600; grid-column: 1 / -1; }
+figcaption a { color: var(--accent); }
+
+@media (max-width: 900px) {
+  .flow { grid-template-columns: 1fr; }
+  .flow-arrow { justify-self: center; width: 2px; height: 18px; margin: 3px 0; }
+  .flow-arrow::after { right: -5px; top: auto; bottom: -2px; border: 6px solid transparent; border-top-color: var(--line-2); border-bottom: 0; }
+}
+
 @media (max-width: 640px) {
   .topbar { padding: 10px 16px; }
   .page { padding: 16px 16px 40px; }
   .card { padding: 16px; }
   .files th:nth-child(4), .files td:nth-child(4) { display: none; }
 }
+.live.sub { font-weight: 400; color: var(--ink-2); margin-top: 2px; }

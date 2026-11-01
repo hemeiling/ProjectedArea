@@ -31,8 +31,34 @@
   ];
   const POLL_MS = 1500;
 
+  // 工作流程图：与代码的实际执行顺序一致（jobs.run_job → estimate_footprint.measure → build_workbook → estimate）
+  // where：在哪里运行；cost：决定服务器规格（费用）的一步
+  const FLOW = [
+    { stage: "input", steps: [
+      { k: "in1", where: "browser", tools: "HTML · JavaScript · Web Crypto (SHA-256)" },
+      { k: "in2", where: "you", critical: true },
+      { k: "in3", where: "you" },
+      { k: "in4", where: "server", tools: "Python · FastAPI · Uvicorn" },
+    ] },
+    { stage: "core", steps: [
+      { k: "c1", where: "server", tools: "PyMuPDF" },
+      { k: "c2", where: "server", tools: "PyMuPDF" },
+      { k: "c3", where: "server", tools: "estimate_footprint.py" },
+      { k: "c4", where: "server", tools: "NumPy · SciPy · OpenCV (Hough)" },
+      { k: "c5", where: "server", tools: "NumPy · SciPy · OpenCV · Pillow", cost: true },
+      { k: "c6", where: "server", tools: "NumPy" },
+      { k: "c7", where: "server", tools: "Tesseract · pytesseract", ocr: true },
+      { k: "c8", where: "server", tools: "PyMuPDF · Pillow" },
+    ] },
+    { stage: "output", steps: [
+      { k: "o1", where: "server", tools: "JSON · PNG", storage: true },
+      { k: "o2", where: "server", tools: "build_workbook.py · openpyxl" },
+      { k: "o3", where: "browser", tools: "estimate.py · FastAPI → JavaScript" },
+    ] },
+  ];
+
   // rows: [{file: File|null, sha256, known, hashing, meta, filename, size, name, ref, mpp}]
-  const state = { lang: "zh", meta: null, rows: [], job: null, library: [], pollTimer: null, pollFailures: 0 };
+  const state = { lang: "zh", meta: null, system: null, rows: [], job: null, library: [], pollTimer: null, pollFailures: 0 };
 
   // ------------------------------------------------------------ 文字与格式
   function t(key, vars) {
@@ -89,6 +115,7 @@
     }
     renderRows();
     renderLibrary();
+    renderSystem();
     if (state.job) renderJob(state.job);
     loadRecent();
   }
@@ -346,7 +373,7 @@
       state.job = body;
       renderJob(body);
       if (isRunning()) state.pollTimer = setTimeout(() => poll(id), POLL_MS);
-      else { buildParamGrid($("recalcGrid"), body.params); loadRecent(); loadLibrary(); }
+      else { buildParamGrid($("recalcGrid"), body.params); loadRecent(); loadLibrary(); loadSystem(); }
     } catch (_) {
       state.pollFailures += 1;
       if (state.pollFailures >= 3) $("progressText").textContent = t("err.network");
@@ -407,6 +434,7 @@
     if (failed) return;
 
     $("downloadBtn").href = job.workbook_url;
+    renderResources(job);
     renderKpis(job);
     renderSummary(job);
     renderDrawings(job);
@@ -415,11 +443,13 @@
   function renderDimensionPrompt(job) {
     $("dimMsg").textContent = say(job.error);
     $("dimError").textContent = "";
+    // 不放示例数字：示例值很容易被照抄（例如把 101 图的 75000 填给 102 图），而面积随它的平方变化
     $("dimList").innerHTML = job.needs_dimension.map((n) => `<div class="dim-item">
-      <figure><img src="${esc(n.image_url)}" alt="${esc(n.name)}"><figcaption>${esc(t("dim.caption"))}</figcaption></figure>
+      <figure><img src="${esc(n.image_url)}" alt="${esc(n.name)}"><figcaption>${esc(t("dim.caption"))}
+        · <a href="${esc(n.image_url)}" target="_blank" rel="noopener">${esc(t("dim.fullSize"))}</a></figcaption></figure>
       <label><span>${esc(n.name)} — ${esc(t(n.orientation === "horizontal" ? "dim.horizontal" : "dim.vertical"))}</span>
-        <input type="number" min="1" step="any" inputmode="decimal" placeholder="75000" data-id="${esc(n.id)}"></label>
-    </div>`).join("");
+        <input type="number" min="1" step="any" inputmode="decimal" placeholder="mm" data-id="${esc(n.id)}"></label>
+    </div>`).join("") + `<p class="note crit-note">${esc(t("dim.sensitivity"))}</p>`;
     $("dimList").querySelectorAll("input").forEach((i) => i.addEventListener("input", () => i.classList.remove("invalid")));
     wireLightbox($("dimList"));
   }
@@ -534,6 +564,92 @@
     }
   }
 
+  // ------------------------------------------------------------ 工作流程与费用
+  const gb = (mbValue) => `${num(mbValue / 1024, 1)} GB`;
+
+  async function loadSystem() {
+    try { state.system = await (await fetch("/api/system")).json(); } catch (_) { return; }
+    renderSystem();
+  }
+
+  function renderSystem() {
+    const sys = state.system;
+    if (!sys) return;
+    const h = sys.hosting, obs = sys.observed, st = sys.storage;
+    // 保守取值：本服务器实测最大值与大图参考值（102 图）取较大者 —— 只测过小图时不能据此选小服务器
+    const observedHigher = obs && obs.peak_rss_mb > h.reference_peak_mb;
+    const peak = observedHigher ? obs.peak_rss_mb : h.reference_peak_mb;
+    const peakSrc = observedHigher ? t("sys.peakObserved", { n: obs.runs }) : (h.reference_note[state.lang] || h.reference_note.zh);
+    const need = peak + h.overhead_mb;
+    const observedText = obs ? t("sys.observed", { n: obs.runs, peak: gb(obs.peak_rss_mb), s: num(obs.seconds_per_drawing, 0) })
+                             : t("sys.notObserved");
+
+    $("flow").innerHTML = FLOW.map((col, ci) => `
+      <div class="flow-col ${col.stage}">
+        <div class="flow-head"><b>${esc(t(`stage.${col.stage}`))}</b><span>${esc(t(`stage.${col.stage}.d`))}</span></div>
+        ${col.steps.map((s, si) => {
+          const chips = [`<span class="chip where-${s.where}">${esc(t(`where.${s.where}`))}</span>`];
+          if (s.critical) chips.push(`<span class="chip crit">${esc(t("flow.critical"))}</span>`);
+          if (s.cost) chips.push(`<span class="chip cost">${esc(t("flow.costDriver"))}</span>`);
+          if (s.ocr) chips.push(`<span class="chip ${sys.ocr_available ? "on" : "off"}">${esc(t(sys.ocr_available ? "flow.ocrOn" : "flow.ocrOff"))}</span>`);
+          let live = "";
+          if (s.cost) {
+            live = `<div class="live">${esc(t("flow.peak", { peak: gb(peak), src: peakSrc }))}</div><div class="live sub">${esc(observedText)}</div>`;
+          }
+          if (s.storage) {
+            live = `<div class="live">${esc(t("flow.storage", { lib: num(st.library), n: st.library_files, cache: num(st.cache), jobs: num(st.jobs) }))}</div>`;
+          }
+          return `<div class="step${s.cost ? " cost" : ""}${s.critical ? " crit" : ""}">
+            <div class="step-n">${ci + 1}.${si + 1}</div>
+            <div class="step-body"><b>${esc(t(`flow.${s.k}.t`))}</b><p>${esc(t(`flow.${s.k}.d`))}</p>
+              <div class="chips">${chips.join("")}${s.tools ? `<code>${esc(s.tools)}</code>` : ""}</div>${live}</div></div>`;
+        }).join("")}
+      </div>${ci < FLOW.length - 1 ? '<div class="flow-arrow" aria-hidden="true"></div>' : ""}`).join("");
+
+    $("sysNeed").textContent = `${t("sys.need", { peak: gb(peak), src: peakSrc, need: gb(need) })} ${observedText}`;
+    let html = `<thead><tr><th>${esc(t("host.option"))}</th><th class="num">${esc(t("host.ram"))}</th><th>${esc(t("host.fits"))}</th>
+      <th class="num">${esc(t("host.compute"))}</th><th class="num">${esc(t("host.disk"))}</th><th class="num">${esc(t("host.total"))}</th>
+      <th>${esc(t("host.note"))}</th></tr></thead><tbody>`;
+    for (const o of h.options) {
+      const fits = o.ram_gb === null ? null : o.ram_gb * 1024 >= need;
+      const disk = o.disk === true ? h.disk_gb * h.disk_usd_per_gb_month : (o.disk === null ? null : 0);
+      const total = o.compute_usd + (disk || 0);
+      const fitsCell = fits === null ? `<span class="tag">${esc(t("host.fitsIf", { need: gb(need) }))}</span>`
+        : `<span class="tag ${fits ? "ok" : "bad"}">${esc(t(fits ? "host.yes" : "host.no"))}</span>`;
+      html += `<tr class="${fits === false ? "unfit" : ""}"><td><b>${esc(o.name[state.lang] || o.name.zh)}</b></td>
+        <td class="num">${o.ram_gb === null ? esc(t("host.ownRam")) : `${num(o.ram_gb, o.ram_gb < 1 ? 1 : 0)} GB`}</td>
+        <td>${fitsCell}</td>
+        <td class="num">US$ ${num(o.compute_usd, 0)}</td>
+        <td class="num">${disk === null ? esc(t("host.noDisk")) : `US$ ${num(disk, 2)}`}</td>
+        <td class="num"><b>US$ ${num(total, 2)}</b>${esc(t("host.perMonth"))}</td>
+        <td class="muted">${esc(o.note[state.lang] || o.note.zh || "")}</td></tr>`;
+    }
+    $("hostingTable").innerHTML = html + "</tbody>";
+    const notes = [
+      t("sys.noteSoftware"),
+      t("sys.noteGithub"),
+      t("sys.noteBandwidth", { gb: h.bandwidth.included_gb, usd: h.bandwidth.usd_per_gb_after }),
+      t("sys.noteSource", { src: h.source, date: h.checked }),
+    ];
+    if (!sys.password_protected) notes.push(t("sys.notePassword"));
+    $("sysNotes").innerHTML = notes.map((n) => `<li>${esc(n)}</li>`).join("");
+  }
+
+  function renderResources(job) {
+    const r = job.resources, line = $("resourceLine");
+    line.hidden = !r;
+    if (!r) return;
+    const parts = [];
+    if (r.measure) {
+      parts.push(r.measure.peak_rss_mb
+        ? t("res.measured", { n: r.measure.drawings, s: num(r.measure.seconds, 1), peak: gb(r.measure.peak_rss_mb) })
+        : t("res.measuredNoPeak", { n: r.measure.drawings, s: num(r.measure.seconds, 1) }));
+    }
+    if (r.reused) parts.push(t("res.reused", { n: r.reused }));
+    if (r.workbook) parts.push(t("res.workbook", { s: num(r.workbook.seconds, 1) }));
+    line.textContent = t("res.title") + parts.join(t("res.sep"));
+  }
+
   // ------------------------------------------------------------ 最近的估算
   async function loadRecent() {
     let jobs;
@@ -579,6 +695,7 @@
     try { await loadMeta(); } catch (_) { $("uploadError").textContent = t("err.network"); }
     applyI18n();
     loadLibrary();
+    loadSystem();
     route();
   }
 

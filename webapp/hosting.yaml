@@ -1,0 +1,38 @@
+# 网页“工作流程与费用”中的托管价格（参考信息，不参与任何估算计算）。价格会变，更新时同时改 checked。
+source: "https://render.com/pricing"
+checked: "2026-11-01"
+disk_usd_per_gb_month: 0.25
+disk_gb: 5
+bandwidth: {included_gb: 5, usd_per_gb_after: 0.15}
+
+# 没有本服务器实测数据时用的参考值：102 图（A3）测量时的内存峰值，2026-11-01 在 macOS 上实测
+reference_peak_mb: 3329
+reference_note: {zh: "102 图（A3）2026-11-01 实测", en: "drawing 102 (A3), measured 2026-11-01"}
+# 网页服务本身与操作系统需要的余量
+overhead_mb: 500
+
+options:
+  - key: local
+    name: {zh: "本机 Mac / 办公室电脑", en: "Your Mac / an office PC"}
+    ram_gb: null              # 用已有电脑，内存够就行
+    compute_usd: 0
+    disk: false               # 用电脑自己的硬盘，不另收费
+    note: {zh: "免费；电脑需开机，同事需在同一网络（建议设访问密码）", en: "Free; the computer must stay on and co-workers must be on the same network (set a password)"}
+  - key: render-free
+    name: {zh: "Render 免费实例", en: "Render free instance"}
+    ram_gb: 0.5
+    compute_usd: 0
+    disk: null                # 免费实例不能挂持久磁盘
+    note: {zh: "无持久磁盘：休眠或重启后图纸库与历史清空", en: "No persistent disk: the library and history are wiped on sleep or restart"}
+  - key: render-1c-2g
+    name: {zh: "Render 1c-2g", en: "Render 1c-2g"}
+    ram_gb: 2
+    compute_usd: 25
+    disk: true
+    note: {zh: "", en: ""}
+  - key: render-2c-4g
+    name: {zh: "Render 2c-4g", en: "Render 2c-4g"}
+    ram_gb: 4
+    compute_usd: 85
+    disk: true
+    note: {zh: "render.yaml 当前选择", en: "current choice in render.yaml"}

@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 
 import pymupdf
@@ -203,9 +204,21 @@ def _resolve_dimensions(store, lib, jid, drawings):
     return warnings
 
 
+def _reap(proc):
+    """等待子进程结束；能取到时同时返回它的内存峰值 (MB)。Windows 没有 wait4，只记用时。"""
+    if not hasattr(os, "wait4"):
+        proc.wait()
+        return None
+    _, status, usage = os.wait4(proc.pid, 0)
+    proc.returncode = os.waitstatus_to_exitcode(status)
+    # ru_maxrss：macOS 单位是字节，Linux 是 KB
+    return usage.ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
+
+
 def _run(cmd, timeout_s, on_line=None):
-    """运行估算程序；逐行回调 stdout。返回 (退出码, stderr 末尾)。"""
+    """运行估算程序；逐行回调 stdout。返回 (退出码, stderr 末尾, 实测资源 {seconds, peak_rss_mb})。"""
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    started = time.monotonic()
     proc = subprocess.Popen(cmd, cwd=ESTIMATOR_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace")
     err_chunks, timed_out = [], threading.Event()
@@ -221,17 +234,18 @@ def _run(cmd, timeout_s, on_line=None):
             log.info("%s", line.rstrip())
             if on_line:
                 on_line(line)
-        proc.wait()
+        peak_mb = _reap(proc)
     finally:
         timer.cancel()
     t_err.join(timeout=5)
     if timed_out.is_set():
         raise Failed(msg("timeout", minutes=timeout_s // 60))
-    return proc.returncode, "".join(err_chunks)[-STDERR_TAIL:]
+    usage = dict(seconds=round(time.monotonic() - started, 1), peak_rss_mb=peak_mb and round(peak_mb))
+    return proc.returncode, "".join(err_chunks)[-STDERR_TAIL:], usage
 
 
 def _measure(store, jid, todo, cfg_path, done_before, total):
-    """只测量 todo 中的图纸；返回 results.json 的 drawings 列表"""
+    """只测量 todo 中的图纸；返回 (results.json 的 drawings 列表, 实测资源)"""
     done = [0]
 
     def on_line(line):
@@ -240,7 +254,7 @@ def _measure(store, jid, todo, cfg_path, done_before, total):
             store.update(jid, progress=dict(done=done_before + done[0], total=total))
 
     out = os.path.join(store.dir(jid), "results")
-    code, err = _run([sys.executable, os.path.join(ESTIMATOR_DIR, "estimate_footprint.py"), cfg_path, "--out", out],
+    code, err, usage = _run([sys.executable, os.path.join(ESTIMATOR_DIR, "estimate_footprint.py"), cfg_path, "--out", out],
                      MEASURE_TIMEOUT_S, on_line)
     if code != 0:
         d = todo[min(done[0], len(todo) - 1)]
@@ -252,17 +266,18 @@ def _measure(store, jid, todo, cfg_path, done_before, total):
             m = msg("measure_failed", name=d["name"])
         raise Failed(m, err)
     with open(os.path.join(out, "results.json"), encoding="utf-8") as f:
-        return json.load(f)["drawings"]
+        return json.load(f)["drawings"], dict(usage, drawings=len(todo))
 
 
 def build_workbook(store, jid, cfg_path):
-    """(重新)生成工作簿。参数修改后只需重跑这一步，无需重新测量。"""
+    """(重新)生成工作簿，返回实测资源。参数修改后只需重跑这一步，无需重新测量。"""
     jdir = store.dir(jid)
-    code, err = _run([sys.executable, os.path.join(ESTIMATOR_DIR, "build_workbook.py"), cfg_path,
+    code, err, usage = _run([sys.executable, os.path.join(ESTIMATOR_DIR, "build_workbook.py"), cfg_path,
                       os.path.join(jdir, "results", "results.json"), os.path.join(jdir, "workbook.xlsx")],
                      WORKBOOK_TIMEOUT_S)
     if code != 0:
         raise Failed(msg("workbook_failed"), err)
+    return usage
 
 
 def _result_warnings(results, ocr):
@@ -325,10 +340,13 @@ def run_job(store, lib, jid):
         job = store.update(jid, stage="measuring", ocr=ocr, warnings=warnings, drawings=drawings,
                            progress=dict(done=len(drawings) - len(todo), total=len(drawings)))
 
-        # 2. 其余的运行估算程序，并存入缓存
+        # 2. 其余的运行估算程序，并存入缓存；记录实测用时与内存峰值（决定服务器规格）
+        resources = dict(reused=len(drawings) - len(todo), measure=None, workbook=None)
         if todo:
             cfg_path = _job_config(store, lib, jid, cfg, todo)
-            for r in _measure(store, jid, todo, cfg_path, len(drawings) - len(todo), len(drawings)):
+            measured, resources["measure"] = _measure(store, jid, todo, cfg_path, len(drawings) - len(todo),
+                                                      len(drawings))
+            for r in measured:
                 entries[r["id"]] = r
                 lib.store(keys[r["id"]], r, results_dir, jid)
         results = [entries[d["id"]] for d in drawings]
@@ -338,13 +356,13 @@ def run_job(store, lib, jid):
         # 3. 工作簿与汇总（config.yaml 写全部图纸，便于命令行复现）
         store.update(jid, stage="workbook")
         cfg_path = _job_config(store, lib, jid, cfg, drawings)
-        build_workbook(store, jid, cfg_path)
+        resources["workbook"] = build_workbook(store, jid, cfg_path)
         warnings += _result_warnings(results, ocr)
         for d, r in zip(drawings, results):
             lib.remember(d["sha256"], jid, d["name"], d["reference_length_mm"], d.get("mm_per_pt"),
                          d["reference_source"], r["footprint_m2"])
         store.update(jid, status="done", stage="done", warnings=warnings, results=public_results(results),
-                     estimate=estimate.estimate(results, job["params"], cfg))
+                     estimate=estimate.estimate(results, job["params"], cfg), resources=resources)
         log.info("job %s done (%d reused, %d measured)", jid, len(drawings) - len(todo), len(todo))
     except Failed as e:
         log.warning("job %s failed: %s", jid, e.message["en"])

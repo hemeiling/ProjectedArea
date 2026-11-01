@@ -10,7 +10,7 @@ import estimate_footprint as ef
 HIGHLIGHT = (230, 0, 120)
 
 
-def preview(pdf_path, out_png, max_px=1600):
+def preview(pdf_path, out_png, max_px=2800):
     """生成提示图；返回 {length_pt, orientation}，找不到线状路径时 length_pt = 0"""
     page, paths = ef.load_paths(pdf_path)
     length, rect = ef.longest_line(paths)

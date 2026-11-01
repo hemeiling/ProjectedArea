@@ -250,6 +250,30 @@ def test_ui_strings_exist_in_both_languages():
     for k in i18n["zh"]:
         assert set(re.findall(r"{\w+}", i18n["zh"][k])) == set(re.findall(r"{\w+}", i18n["en"][k])), k
     # 页面与脚本里直接引用的每个键都必须存在
+    js = open(os.path.join(ROOT, "webapp", "static", "app.js"), encoding="utf-8").read()
     used = set(re.findall(r'data-i18n(?:-aria)?="([\w.]+)"', open(os.path.join(ROOT, "webapp", "static", "index.html"), encoding="utf-8").read()))
-    used |= set(re.findall(r'\bt\("([\w.]+)"', open(os.path.join(ROOT, "webapp", "static", "app.js"), encoding="utf-8").read()))
+    used |= set(re.findall(r'\bt\("([\w.]+)"', js))
+    # 流程图的步骤、阶段、运行位置是拼出来的键
+    flow = js[js.index("const FLOW"): js.index("];", js.index("const FLOW"))]
+    for k in re.findall(r'k: "(\w+)"', flow):
+        used |= {f"flow.{k}.t", f"flow.{k}.d"}
+    for s in re.findall(r'stage: "(\w+)"', flow):
+        used |= {f"stage.{s}", f"stage.{s}.d"}
+    used |= {f"where.{w}" for w in re.findall(r'where: "(\w+)"', flow)}
     assert used <= set(i18n["zh"]), used - set(i18n["zh"])
+
+
+def test_system_endpoint_reports_hosting_usage_and_measured_resources(client, layout_pdf):
+    before = client.get("/api/system").json()
+    assert before["observed"] is None and before["password_protected"] is False
+    assert {o["key"] for o in before["hosting"]["options"]} >= {"local", "render-free", "render-2c-4g"}
+    job = wait_for(client, submit(client, [layout_pdf], [REFERENCE_MM]).json()["job_id"])
+    m = job["resources"]["measure"]
+    assert m["drawings"] == 1 and m["seconds"] > 0 and job["resources"]["workbook"]["seconds"] > 0
+    after = client.get("/api/system").json()
+    if m["peak_rss_mb"] is not None:                                     # 有 wait4 的系统（macOS / Linux）
+        assert after["observed"]["runs"] == 1 and after["observed"]["peak_rss_mb"] == m["peak_rss_mb"] > 50
+    assert after["storage"]["library_files"] == 1 and after["storage"]["library"] >= 0     # 1.5 KB 合成文件按 MB 取整为 0
+    # 再次计算同一文件：复用缓存，不测量
+    again = wait_for(client, submit(client, [layout_pdf], [REFERENCE_MM]).json()["job_id"])
+    assert again["resources"]["measure"] is None and again["resources"]["reused"] == 1

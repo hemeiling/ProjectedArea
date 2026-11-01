@@ -81,6 +81,7 @@
       </div>
     </div>
     <p class="note"><span data-i18n="results.downloadNote"></span> <span data-i18n="results.share"></span></p>
+    <p class="note" id="resourceLine" hidden></p>
 
     <div id="dimBox" class="alert alert-amber" hidden>
       <strong data-i18n="dim.title"></strong>
@@ -133,6 +134,16 @@
   <section class="card">
     <h2 class="h-small" data-i18n="recent.title"></h2>
     <ul class="recent" id="recentList"></ul>
+  </section>
+
+  <section class="card" id="systemCard">
+    <h2 data-i18n="sys.title"></h2>
+    <p class="note" data-i18n="sys.lede"></p>
+    <div class="flow" id="flow"></div>
+    <h3 data-i18n="sys.hostingTitle"></h3>
+    <p class="note" id="sysNeed"></p>
+    <div class="table-wrap"><table class="hosting" id="hostingTable"></table></div>
+    <ul class="sys-notes" id="sysNotes"></ul>
   </section>
 
   <section class="method">
