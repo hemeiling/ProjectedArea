@@ -167,11 +167,13 @@ def building_box(paths, ref_pt, min_frac):
 
 
 def hatch_mask(paths, W, H, S, mm, cfg):
-    """填充区 = 长斜线(约45°, 单根 ≥ min_segment_mm)成片的区域 = 墙体/非设备区。
-    设备内部的斜线（弧线近似、斜撑）都很短，不会被误判。"""
+    """填充区 = 同一颜色的长斜线(约45°, 单根 ≥ min_segment_mm)成片的区域 = 墙体/非设备区。
+    设备内部的斜线（弧线近似、斜撑）都很短，不会被误判。
+    按颜色分别成片：CAD 的填充图案是一个对象、一种颜色。不同颜色的斜线一起闭合时，设备上的“方框+对角线”
+    符号（101 图 OP-01 提升机）会与旁边的通道填充带连成一片，使设备被整块排除。"""
     min_len = cfg["min_segment_mm"] / mm
-    diag = Image.new("L", (W, H), 0); d = ImageDraw.Draw(diag)
-    for _, _, polys in paths:
+    by_colour = {}
+    for col, _, polys in paths:
         for pl in polys:
             for a, b in zip(pl, pl[1:]):
                 ang = abs(math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))) % 180
@@ -179,15 +181,22 @@ def hatch_mask(paths, W, H, S, mm, cfg):
                     continue
                 if cfg["angle_min"] <= ang <= cfg["angle_max"] or \
                    180 - cfg["angle_max"] <= ang <= 180 - cfg["angle_min"]:
-                    d.line([(a[0] * S, a[1] * S), (b[0] * S, b[1] * S)], fill=255, width=1)
-    m = np.array(diag) > 0
+                    by_colour.setdefault(tuple(col), []).append((a, b))
     k = max(1, int(cfg["close_mm"] / mm * S))
-    m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) > 0
-    lab, _ = ndi.label(m)
-    objs = ndi.find_objects(lab)
     px_m2 = (mm / S) ** 2 / 1e6
-    sizes = label_sizes(lab, objs) * px_m2
-    return select_labels(lab, objs, np.where(sizes >= cfg["min_area_m2"])[0] + 1)
+    out = np.zeros((H, W), bool)
+    for segs in by_colour.values():
+        diag = Image.new("L", (W, H), 0); d = ImageDraw.Draw(diag)
+        for a, b in segs:
+            d.line([(a[0] * S, a[1] * S), (b[0] * S, b[1] * S)], fill=255, width=1)
+        m = cv2.morphologyEx((np.array(diag) > 0).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) > 0
+        del diag
+        lab, _ = ndi.label(m)
+        objs = ndi.find_objects(lab)
+        sizes = label_sizes(lab, objs) * px_m2
+        out |= select_labels(lab, objs, np.where(sizes >= cfg["min_area_m2"])[0] + 1)
+        del m, lab
+    return out
 
 
 def label_sizes(lab, objs):
@@ -389,7 +398,7 @@ def measure(drawing, cfg, out_dir):
                 reference_length_mm=drawing["reference_length_mm"], mm_per_pt=round(mm, 4),
                 building_box_m=[round((bx1 - bx0) * mm / 1000, 1), round((by1 - by0) * mm / 1000, 1)],
                 agv_circles_removed=n_circles, footprint_m2=total, n_groups=len(groups),
-                envelope=envelope, footprint_vs_envelope=round(total / envelope["area_m2"], 3),
+                envelope=envelope, footprint_vs_envelope=round(total / envelope["area_m2"], 3) if envelope["area_m2"] else None,
                 stations=station_rows, station_sum_m2=round(sum(r["footprint_m2"] for r in station_rows), 1),
                 overlay=os.path.basename(ov_path), station_overlay=os.path.basename(st_path) if st_path else None,
                 groups=groups)
@@ -403,7 +412,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     base = os.path.dirname(os.path.abspath(a.config))
     res = []
-    for d in conf["drawings"]:
+    for d in (d for d in conf["drawings"] if d.get("pdf")):      # 只有 DXF 的图纸由 dxf_footprint.py 计算
         d = dict(d); d["pdf"] = os.path.join(base, d["pdf"]) if not os.path.isabs(d["pdf"]) else d["pdf"]
         r = measure(d, conf["extraction"], a.out); res.append(r)
         print(f"[{r['id']}] 比例 {r['mm_per_pt']} mm/pt | 厂房 {r['building_box_m']} m | "

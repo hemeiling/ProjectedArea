@@ -9,6 +9,18 @@ drawings:
     name: "GLTR-101 Power Module Line (30 PPM)"
     pdf: "drawings/101-SSY1070-GR-30PPM-Simplified-v3.6.pdf"
     reference_length_mm: 75000      # 图上最长尺寸线的标注值（总长）
+    # 同一产线的 DXF（dxf_footprint.py）。DXF 未声明单位，依据：背景框 75 256 单位 ≈ PDF 图上总尺寸 75000 mm，
+    # 设备外包 72.1 × 7.1 千单位 ≈ PDF 按其自身比例测得的 72.2 × 6.9 m
+    dxf: "drawings/101-SSY1070-GR-30PPM-Simplified-V3.6.dxf"
+    dxf_unit_mm: 1
+    dxf_unit_basis: "背景框 75 256 单位 = PDF 总尺寸 75000 mm；设备外包与 PDF 一致"
+    sha256: "092b0834b2b5491e29b3f6fc0157e574604b293e8fb6a7024f27055c9574f9d6"   # 以下人工分类只对此文件有效
+    overrides:
+      REN: {class: excluded, reason: "人员符号"}
+      A$C52064B34: {class: excluded, reason: "物流方向箭头（注释）"}
+      A$C3bedfd71: {class: unresolved, reason: "方框+对角线符号（提升机井道/开口标记？），待确认"}
+      "53": {class: unresolved, reason: "带把手的托板，可能是移动小车，待确认"}
+      "60": {class: unresolved, reason: "带把手的托板，可能是移动小车，待确认"}
     station_overrides:              # 可选：修正 OCR 识别错误的工位名称
       - {op: "OP-05", name: "Module Stacking"}
     # mm_per_pt: 63.76              # 可选：若自动识别失败，直接给比例
@@ -16,6 +28,17 @@ drawings:
     name: "CAXM-102 CTP Line (14 JPH)"
     pdf: "drawings/102-NSY1540-XM-P1-CIR-14JPH-Simplified-v3.2.pdf"
     reference_length_mm: 115000
+    dxf: "drawings/102-NSY1540- XM-P1-CIR-14JPH-Simplified-V3.2.dxf"      # $INSUNITS = mm
+    sha256: "0d9d42b54079b6043dc3d30830c86b26fff7d59f4257e0a2f40f9c5f3687d1b0"
+    overrides:                      # 按图块图形人工核对（2026-11-01）
+      "13231323112": {class: excluded, reason: "人员符号"}
+      AGV: {class: mobile, reason: "AGV"}
+      suixing: {class: mobile, reason: "随行小车"}
+      工装小车: {class: mobile, reason: "工装小车"}
+      底护板转运车: {class: mobile, reason: "转运车"}
+      预留: {class: unresolved, reason: "预留位（空矩形），待确认"}
+      6VF62V: {class: unresolved, reason: "椭圆托盘/AGV 状符号，待确认"}
+      C5D: {class: unresolved, reason: "椭圆托盘/AGV 状符号，待确认"}
     station_overrides:              # OCR 名称人工复核后修正（编号以图纸为准）
       - {op: "OP-01", name: "Cell Loading"}
       - {op: "OP-05", name: "Module Stacking"}
@@ -41,6 +64,35 @@ drawings:
       - {op: "OP-40", name: "PACK Offline"}
 
 # ---------- 第一步：投影面积提取参数 ----------
+  - id: "103"
+    name: "SSY1667 CTP Line (10 JPH) V3.6"
+    dxf: "drawings/103-SSY1667-CTP产线-10JPH-Simplified-V3.6.dxf"     # $INSUNITS = mm
+    sha256: "66d24f375da29de736b398cf373185c6fe404f5477c45b133fbfc82ab9b1f474"
+    overrides:                      # 按图块名称与图形人工核对（2026-11-01）
+      人物: {class: excluded, reason: "人员符号"}
+      REN: {class: excluded, reason: "人员符号"}
+      随行小车及AGV: {class: mobile, reason: "AGV 及随行小车"}
+      AGV随行小车: {class: mobile, reason: "AGV 随行小车"}
+      随行小车V1.2: {class: mobile, reason: "随行小车"}
+      AGVv12: {class: mobile, reason: "AGV"}
+      凌顶AGV: {class: mobile, reason: "AGV"}
+      托盘: {class: mobile, reason: "托盘"}
+      工具托盘: {class: mobile, reason: "工具托盘"}
+      GFJ: {class: unresolved, reason: "方形符号（可能是厂房柱），待确认"}
+      ggsfg: {class: unresolved, reason: "方形符号（可能是厂房柱），待确认"}
+  - id: "104"
+    name: "NSY1682 PDM06 CTP Line (32 PPM) V3.2"
+    dxf: "drawings/104-NSY1682-PDM06-CTP-32PPM-Simplified-V3.2.dxf"
+    dxf_unit_mm: 1                  # DXF 未声明单位（$INSUNITS=0），按下列证据推定为 mm
+    dxf_unit_basis: "推定：NG小车 835×1439、托盘 1623×406、倍速链线长 25185、标注值 343.5/825.5/1550（DIMLFAC=1）只在 mm 下合理"
+    sha256: "0520e7f5d33cb5d374cfc02447dd3b0542d70ef605ddae764d3f1a55fc45477b"
+    overrides:                      # 按图块名称核对（2026-11-01）
+      托盘: {class: mobile, reason: "托盘"}
+      托盘组: {class: mobile, reason: "托盘组"}
+      电芯小车: {class: mobile, reason: "电芯小车"}
+      NG小车: {class: mobile, reason: "NG 小车"}
+      A$C52064B34: {class: excluded, reason: "物流方向箭头（注释）"}
+
 extraction:
   render_px_per_pt: 4               # 栅格分辨率；4 ≈ 每像素 16–25 mm
   building:
@@ -79,6 +131,18 @@ extraction:
     column_tolerance_mm: 4000       # 横向相差 <4 m 的标签属于同一标签列
 
 # ---------- 第二步：公摊工时（业务输入，不由图纸推断）----------
+dxf:                                # DXF 输入（dxf_footprint.py）。闭合缺口、填充内部、去细线、碎片阈值与上面 extraction 共用
+  resolution_mm: 10                 # 每个图块栅格化的分辨率（mm/像素）
+  curve_tolerance_mm: 1             # 圆弧、样条等曲线离散为折线的最大偏差
+  exclude_colours: [2]              # ACI 2 黄色：安全围栏/注释（与 PDF 方法的 exclude_colors 一致）
+  exclude_layers: [ASHADE]          # 渲染灯光图层；关闭、冻结、不打印的图层和 Defpoints 自动排除
+  exclude_bound_xref_layers: true   # 绑定的外部参照图层（名称含 $0$，如建筑底图的墙、窗、轴网、图框）不计入
+  cluster_mm: 2000                  # 打散在模型空间的线条按此网格邻接聚成一团（一台设备）
+  offline_gap_mm: 20000             # 无背景框时：与主体设备相距超过此值的图形视为线外，不计入
+  bare_outline_max_polylines: 4     # 只有 ≤ 4 条线、没有内部细节的图形（区域框、预留位）列为待定，不计入
+  max_object_mm: 200000             # 单个图块/线团跨度超过 200 m（混有远处零散图形）时先按邻近拆分
+  max_raster_px: 150000000          # 单个栅格上限（像素）；超过时降低分辨率并在结果中警告
+
 labor:
   shared_hours_per_m2: 0.52         # 公摊工时系数（工时 / m²）
   source: "现有《钳工/电工工时推算》表：公摊&投影面积 0.52 小时/m²"
