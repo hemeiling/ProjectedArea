@@ -47,7 +47,7 @@ python3 -m venv .venv
 
 | 功能 | 说明 |
 |---|---|
-| 上传 | 一次 1–10 张 PDF；名称、标注总尺寸、比例（mm/点）均可选填 |
+| 上传 | 一次 1–30 张 PDF：可多选、拖入多个文件或整个文件夹，图纸库可“全部加入”；重复文件（含改名的同一文件）自动跳过；名称、标注总尺寸、比例（mm/点）均可选填 |
 | 结果 | 精细面积、基准面积、公摊工时、40HQ 箱数、运费；每张图的叠加图、线体基准、工位明细 |
 | Excel | 与命令行生成的工作簿相同（全部为公式）；可在网页修改业务参数后重新生成，不重新测量面积 |
 | 图纸库 | 上传过的 PDF 按**内容 SHA-256** 识别（改名也能识别）。同一文件 + 同样的标注尺寸 + 同样的提取参数与测量代码 → 直接复用上次的测量结果；文件内容有任何改动都会重新测量 |
@@ -66,12 +66,35 @@ data/cache/<key>/                   测量缓存：result.json + 叠加图
 data/jobs/<id>/                     每次估算：config.yaml（可用命令行复现）、results/、workbook.xlsx、job.json
 ```
 
-### 部署到 Render
+### 桌面版（推荐：不需要服务器，费用为 0）
+
+同一个界面在本机窗口中运行（只监听 127.0.0.1，不对外开放）；计算、内存、图纸库都在这台电脑上。
+测量一张 A3 大图内存峰值约 0.7–0.9 GB，8 GB 内存的办公电脑足够。
+
+| | |
+|---|---|
+| 获取安装包 | GitHub → Actions → **desktop-app** → Run workflow，完成后在该次运行的 Artifacts 下载 `LayoutEstimator-Windows.zip` / `LayoutEstimator-macOS.zip`（推送 `v*` 标签时同时发布到 Releases） |
+| Windows | 解压后双击文件夹里的 `LayoutEstimator.exe`（整个文件夹一起保留）。未签名：首次运行如出现 SmartScreen，点“更多信息 → 仍要运行”。需要 WebView2（Win10/11 已自带） |
+| macOS | 解压后把 `LayoutEstimator.app` 拖到“应用程序”。未签名：首次右键 → 打开（或“系统设置 → 隐私与安全性 → 仍要打开”）。Apple 芯片 |
+| 工位识别 | Windows 安装包自带 Tesseract；macOS 如已安装 Tesseract（Homebrew 等）会自动找到，否则只算整图面积 |
+| 数据 | macOS `~/Library/Application Support/LayoutEstimator`，Windows `%LOCALAPPDATA%\LayoutEstimator`（界面“工作流程与费用”中可直接打开）；只在本机，结果用 Excel / HTML 报告分享 |
+| 自检 | `LayoutEstimator --smoke-test`：用合成图纸跑一遍测量与工作簿，检查面积 |
+
+本机打包与开发：
+
+```bash
+.venv/bin/pip install -r requirements-desktop.txt
+.venv/bin/python desktop.py                                  # 从源代码打开桌面版
+.venv/bin/python -m PyInstaller --noconfirm desktop.spec     # 打包到 dist/（在哪个系统上打包就得到哪个系统的程序）
+```
+
+### 部署到 Render（可选：需要多人共用一个网址和同一个图纸库时）
 
 仓库根目录有 `Dockerfile`（含 Tesseract OCR）与 `render.yaml`：Render Dashboard → **New → Blueprint** → 选择本仓库。
 
-- **实例内存 ≥ 4 GB**：测量 102 图（A3）时内存峰值实测约 3.3 GB，免费实例（512 MB）和 2 GB 实例都会内存不足。
-  按 2026-11 的 Render 价格：`2c-4g` 实例 US$85/月 + 5 GB 磁盘 US$1.25/月；Hobby 工作区本身免费。
+- **实例内存 ≥ 2 GB**：测量 102 图（A3）时内存峰值实测约 0.7–0.84 GB（内存优化后；优化前约 3.3 GB），
+  加上网页服务与系统余量约需 1.3 GB；免费实例（512 MB）不够。
+  按 2026-11 的 Render 价格：`1c-2g` 实例 US$25/月 + 5 GB 磁盘 US$1.25/月；Hobby 工作区本身免费。
 - **持久磁盘** 挂载到 `/var/data`：否则每次重启或重新部署都会清空图纸库与历史结果（磁盘只在付费实例上可用）。
 - **访问密码**：在 Dashboard 的环境变量中设置 `ACCESS_PASSWORD`（不写进仓库）；设置后整个网站需要密码（用户名任意），`/api/health` 除外。
 - 只能单实例、单进程：任务队列与状态在进程内。

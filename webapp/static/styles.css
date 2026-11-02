@@ -98,6 +98,10 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
   border: 1.5px solid var(--accent); border-radius: 4px; padding: 6px 7px;
 }
 
+.pick-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; }
+.pick-row .note { margin: 0; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font-size: 12.5px; }
+
 .table-wrap { overflow-x: auto; margin-top: 12px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }

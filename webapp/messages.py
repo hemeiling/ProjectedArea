@@ -17,6 +17,10 @@ MESSAGES = {
     "file_too_large": (
         "「{file}」超过 {max_mb} MB 上限。",
         "\"{file}\" exceeds the {max_mb} MB limit."),
+    "upload_too_large": (
+        "本次上传的文件合计超过 {max_mb} MB，请分几批上传（图纸库里已有的文件不占上传量）。",
+        "The files in this upload add up to more than {max_mb} MB; upload them in several batches "
+        "(files already in the library do not count)."),
     "not_pdf": (
         "「{file}」不是有效的 PDF（文件开头没有 %PDF 标识）。如果文件经过公司加密软件处理，请先解密，"
         "或在 AutoCAD 中重新“打印为 PDF”后再上传。",
@@ -93,8 +97,8 @@ MESSAGES = {
         "\"{name}\" is identical to an earlier upload (same content hash) with the same measurement inputs; "
         "the measurement from {when} was reused."),
     "ocr_unavailable": (
-        "服务器未安装 Tesseract OCR，已跳过工位识别：只给出整图投影面积，不分工位；精细面积直接取整图投影面积（同一口径）。",
-        "Tesseract OCR is not installed on the server, so station recognition was skipped: only the whole-drawing "
+        "未找到 Tesseract OCR 程序，已跳过工位识别：只给出整图投影面积，不分工位；精细面积直接取整图投影面积（同一口径）。",
+        "Tesseract OCR was not found, so station recognition was skipped: only the whole-drawing "
         "footprint is reported, not per station. The fine area uses that footprint (same definition)."),
     "multi_page": (
         "「{file}」共 {pages} 页，只计算第 1 页。",

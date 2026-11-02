@@ -30,8 +30,9 @@ from webapp.library import Library
 from webapp.messages import msg
 import estimate
 
-MAX_DRAWINGS = 10
+MAX_DRAWINGS = 30
 MAX_FILE_MB = 100
+MAX_UPLOAD_MB = 400          # 一次上传的总量：上传内容先全部读入内存再校验
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 WORKBOOK_NAME = "投影面积与装柜估算"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -135,7 +136,8 @@ def _authorized(request, password):
     return secrets.compare_digest(given.encode("utf-8"), password.encode("utf-8"))
 
 
-def create_app(data_dir=None):
+def create_app(data_dir=None, desktop=False):
+    """desktop=True：桌面版（只监听本机，界面显示数据目录并把“服务器”称为“本机”）"""
     data_dir = data_dir or os.environ.get("LAYOUT_DATA_DIR") or os.path.join(J.ESTIMATOR_DIR, "data")
     store, lib = J.JobStore(data_dir), Library(data_dir)
     worker = J.Worker(store, lib)
@@ -183,8 +185,11 @@ def create_app(data_dir=None):
         """“工作流程与费用”：托管价格（参考）、本服务器实测资源、存储占用"""
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "hosting.yaml"), encoding="utf-8") as f:
             hosting = yaml.safe_load(f)
-        return dict(hosting=hosting, observed=_observed(store.recent(200)), storage=_storage(data_dir),
-                    ocr_available=J.ocr_available(), password_protected=bool(password))
+        out = dict(hosting=hosting, observed=_observed(store.recent(200)), storage=_storage(data_dir),
+                   ocr_available=J.ocr_available(), password_protected=bool(password), desktop=desktop)
+        if desktop:                                       # 只在本机桌面版返回本机路径
+            out["data_dir"] = os.path.abspath(data_dir)
+        return out
 
     # ------------------------------------------------------------ 图纸库
     @app.get("/api/library")
@@ -220,12 +225,15 @@ def create_app(data_dir=None):
         except (ValueError, TypeError, AttributeError) as e:
             raise ApiError(400, msg("bad_params", detail=str(e)))
 
-        uploads = []                                      # 先全部校验，再存入图纸库
+        uploads, total_mb = [], 0.0                       # 先全部校验，再存入图纸库
         for i, f in enumerate(files):
             fname = os.path.basename(f.filename or f"drawing{i + 1}.pdf")[:200]
             data = await _read_limited(f, MAX_FILE_MB)
             if data is None:
                 raise ApiError(413, msg("file_too_large", file=fname, max_mb=MAX_FILE_MB))
+            total_mb += len(data) / 1048576
+            if total_mb > MAX_UPLOAD_MB:
+                raise ApiError(413, msg("upload_too_large", max_mb=MAX_UPLOAD_MB))
             if b"%PDF-" not in data[:1024]:
                 raise ApiError(400, msg("not_pdf", file=fname))
             uploads.append((fname, data))

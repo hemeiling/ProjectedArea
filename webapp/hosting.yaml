@@ -5,13 +5,20 @@ disk_usd_per_gb_month: 0.25
 disk_gb: 5
 bandwidth: {included_gb: 5, usd_per_gb_after: 0.15}
 
-# 没有本服务器实测数据时用的参考值：102 图（A3）测量时的内存峰值，2026-11-01 在 macOS 上实测
-reference_peak_mb: 3329
-reference_note: {zh: "102 图（A3）2026-11-01 实测", en: "drawing 102 (A3), measured 2026-11-01"}
+# 没有本服务器实测数据时用的参考值：102 图（A3）测量时的内存峰值（内存优化后，2026-11-01 在 macOS 上实测）。
+# 不做工位识别 678 MB（已复核：优化前后 results.json 与叠加图逐字节相同）；含工位分摊约 840 MB，取较大者。优化前为 3.3 GB。
+reference_peak_mb: 840
+reference_note: {zh: "102 图（A3）2026-11-01 实测，含工位分摊", en: "drawing 102 (A3), measured 2026-11-01, with station allocation"}
 # 网页服务本身与操作系统需要的余量
 overhead_mb: 500
 
 options:
+  - key: desktop
+    name: {zh: "桌面版（每人在自己电脑上运行）", en: "Desktop app (runs on each PC)"}
+    ram_gb: null
+    compute_usd: 0
+    disk: false
+    note: {zh: "免费；无需服务器。图纸库只在各自电脑上，结果用 Excel / HTML 报告分享", en: "Free; no server. Each PC keeps its own library; share results as Excel or the HTML report"}
   - key: local
     name: {zh: "本机 Mac / 办公室电脑", en: "Your Mac / an office PC"}
     ram_gb: null              # 用已有电脑，内存够就行
@@ -29,10 +36,10 @@ options:
     ram_gb: 2
     compute_usd: 25
     disk: true
-    note: {zh: "", en: ""}
+    note: {zh: "render.yaml 当前选择", en: "current choice in render.yaml"}
   - key: render-2c-4g
     name: {zh: "Render 2c-4g", en: "Render 2c-4g"}
     ram_gb: 4
     compute_usd: 85
     disk: true
-    note: {zh: "render.yaml 当前选择", en: "current choice in render.yaml"}
+    note: {zh: "内存更宽裕，可同时处理更大的图", en: "more headroom for larger drawings"}

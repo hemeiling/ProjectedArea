@@ -20,16 +20,6 @@ from scipy import ndimage as ndi
 OP_RE = re.compile(r"[O0DQo]?\s*P\s*[\-—–_.~=]*\s*(\d{1,2})")
 
 
-def text_paths(page):
-    """返回 [(rect, colour)]：所有 fs 文字字形"""
-    out = []
-    for d in page.get_drawings():
-        if d["type"] == "fs":
-            col = tuple(round(c, 2) for c in (d.get("fill") or (0, 0, 0)))
-            out.append((d["rect"], col))
-    return out
-
-
 def find_label_blocks(page, glyphs, mm, cfg):
     """黑色文字字形 -> 文字块外框(pt)"""
     black = [r for r, c in glyphs if max(c) <= cfg["label_max_lightness"]]
@@ -81,8 +71,8 @@ def parse_label(text):
     return int(m.group(1)), name
 
 
-def detect_stations(page, mm, cfg):
-    glyphs = text_paths(page)
+def detect_stations(page, glyphs, mm, cfg):
+    """glyphs: [(rect, colour)] 所有 fs 文字字形，由 estimate_footprint.load_paths 读取矢量时一并收集"""
     blocks = find_label_blocks(page, glyphs, mm, cfg)
     stations = []
     for r in blocks:

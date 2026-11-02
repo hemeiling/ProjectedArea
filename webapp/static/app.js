@@ -58,7 +58,7 @@
   ];
 
   // rows: [{file: File|null, sha256, known, hashing, meta, filename, size, name, ref, mpp}]
-  const state = { lang: "zh", meta: null, system: null, rows: [], job: null, library: [], pollTimer: null, pollFailures: 0 };
+  const state = { lang: "zh", meta: null, system: null, rows: [], addNote: null, job: null, library: [], pollTimer: null, pollFailures: 0 };
 
   // ------------------------------------------------------------ 文字与格式
   function t(key, vars) {
@@ -93,6 +93,20 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(locale(), { dateStyle: "short", timeStyle: "short" });
   }
   const isBlank = (v) => v === null || v === undefined || String(v).trim() === "";
+  // 桌面版（pywebview 窗口）提供的本机接口；普通浏览器里为 null
+  const desktopApi = () => (window.pywebview && window.pywebview.api) || null;
+
+  async function desktopSave(call) {
+    const out = $("reportError");
+    try {
+      const r = await call();
+      out.classList.toggle("ok", !!(r && r.ok));
+      out.textContent = r && r.ok ? t("desktop.saved", { path: r.path }) : (r && r.cancelled ? "" : t("desktop.saveFailed"));
+    } catch (_) {
+      out.classList.remove("ok");
+      out.textContent = t("desktop.saveFailed");
+    }
+  }
 
   function storedLang() {
     try { return localStorage.getItem("layoutEstimator.lang"); } catch (_) { return null; }
@@ -180,27 +194,75 @@
   }
 
   // ------------------------------------------------------------ 选择文件 / 图纸库
-  const maxDrawings = () => (state.meta ? state.meta.limits.max_drawings : 10);
+  const maxDrawings = () => (state.meta ? state.meta.limits.max_drawings : 30);
+
+  // 一次可加入多个文件或整个文件夹；不是 PDF、重复、超出上限的文件跳过并说明
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
+  let hashing = Promise.resolve();                 // 逐个算 SHA-256：几十个大文件同时读进内存会很慢
 
   function addFiles(fileList) {
-    for (const f of fileList) {
+    const files = [...fileList].sort(byName);
+    const skipped = { notPdf: 0, dup: 0, limit: 0 };
+    let added = 0;
+    for (const f of files) {
       const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
-      if (!isPdf || state.rows.length >= maxDrawings()) continue;
+      if (!isPdf) { if (!/^\./.test(f.name)) skipped.notPdf++; continue; }
+      if (state.rows.some((r) => r.file && r.filename === f.name && r.size === f.size && r.file.lastModified === f.lastModified)) { skipped.dup++; continue; }
+      if (state.rows.length >= maxDrawings()) { skipped.limit++; continue; }
       const row = { file: f, sha256: null, known: false, hashing: true, meta: null,
                     filename: f.name, size: f.size, name: "", ref: "", mpp: "" };
       state.rows.push(row);
-      identify(row);
+      added++;
+      hashing = hashing.then(() => identify(row));
     }
+    state.addNote = { added, ...skipped };
     $("uploadError").textContent = "";
     renderRows();
+  }
+
+  // 拖入的文件夹：逐层读出其中的文件（必须在 drop 事件中同步取得 entry）
+  async function filesFromDrop(dt) {
+    const entries = [...(dt.items || [])].map((it) => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+    if (!entries.length) return [...dt.files];
+    const out = [];
+    async function walk(entry) {
+      if (entry.isFile) {
+        out.push(await new Promise((res, rej) => entry.file(res, rej)));
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+          if (!batch.length) break;
+          for (const e of batch) await walk(e);
+        }
+      }
+    }
+    for (const e of entries) await walk(e);
+    return out;
+  }
+
+  function renderAddNote() {
+    const n = state.addNote, el = $("addNote");
+    if (!n) { el.textContent = ""; return; }
+    const parts = [t("upload.added", { n: n.added })];
+    if (n.notPdf) parts.push(t("upload.skipNotPdf", { n: n.notPdf }));
+    if (n.dup) parts.push(t("upload.skipDup", { n: n.dup }));
+    if (n.limit) parts.push(t("upload.skipLimit", { n: n.limit, max: maxDrawings() }));
+    el.textContent = parts.join(" ");
   }
 
   // 在浏览器里算 SHA-256：图纸库里已有的同一文件不再上传，并带出上次的名称和标注尺寸
   async function identify(row) {
     try {
+      if (!state.rows.includes(row)) return;       // 识别前已被移除
       if (!(window.crypto && crypto.subtle)) return;
       const digest = await crypto.subtle.digest("SHA-256", await row.file.arrayBuffer());
       row.sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (state.rows.some((r) => r !== row && r.sha256 === row.sha256)) {   // 内容相同（改了名）的文件只算一次
+        state.rows.splice(state.rows.indexOf(row), 1);
+        if (state.addNote) { state.addNote.added--; state.addNote.dup++; }
+        return;
+      }
       const res = await fetch(`/api/library/${row.sha256}`);
       if (res.ok) {
         const m = await res.json();
@@ -215,11 +277,17 @@
     }
   }
 
-  function addFromLibrary(m) {
-    if (state.rows.length >= maxDrawings()) return;
-    state.rows.push({ file: null, sha256: m.sha256, known: true, hashing: false, meta: m,
-                      filename: m.filenames[m.filenames.length - 1], size: m.size_bytes, name: m.name || "",
-                      ref: m.reference_length_mm ? String(m.reference_length_mm) : "", mpp: m.mm_per_pt ? String(m.mm_per_pt) : "" });
+  function addLibraryEntries(list) {
+    const note = { added: 0, notPdf: 0, dup: 0, limit: 0 };
+    for (const m of list) {
+      if (state.rows.some((r) => r.sha256 === m.sha256)) { note.dup++; continue; }
+      if (state.rows.length >= maxDrawings()) { note.limit++; continue; }
+      state.rows.push({ file: null, sha256: m.sha256, known: true, hashing: false, meta: m,
+                        filename: m.filenames[m.filenames.length - 1], size: m.size_bytes, name: m.name || "",
+                        ref: m.reference_length_mm ? String(m.reference_length_mm) : "", mpp: m.mm_per_pt ? String(m.mm_per_pt) : "" });
+      note.added++;
+    }
+    state.addNote = note;
     renderRows();
     $("uploadCard").scrollIntoView({ behavior: "smooth" });
   }
@@ -236,6 +304,8 @@
     const body = $("fileRows");
     body.textContent = "";
     $("fileTableWrap").hidden = state.rows.length === 0;
+    $("rowCount").textContent = t("upload.count", { n: state.rows.length, max: maxDrawings() });
+    renderAddNote();
     $("runBtn").disabled = state.rows.length === 0 || isRunning() || state.rows.some((r) => r.hashing);
     state.rows.forEach((row, i) => {
       const tr = document.createElement("tr");
@@ -262,6 +332,7 @@
 
   function renderLibrary() {
     const list = $("libraryList");
+    $("libraryAllBtn").hidden = state.library.length < 2;
     if (!state.library.length) { list.innerHTML = `<li class="muted">${esc(t("library.empty"))}</li>`; return; }
     list.innerHTML = state.library.map((m, i) => `<li>
       <span class="lib-name">${esc(m.name || m.filenames[m.filenames.length - 1])}</span>
@@ -270,7 +341,7 @@
       ${m.footprint_m2 !== null ? `<span>${num(m.footprint_m2)} m²</span>` : ""}
       <span class="when">${esc(when(m.last_used || m.first_uploaded))} · ${esc(t("library.uses", { n: m.uses }))}</span>
       <button type="button" data-lib="${i}">${esc(t("library.add"))}</button></li>`).join("");
-    list.querySelectorAll("button[data-lib]").forEach((b) => b.addEventListener("click", () => addFromLibrary(state.library[Number(b.dataset.lib)])));
+    list.querySelectorAll("button[data-lib]").forEach((b) => b.addEventListener("click", () => addLibraryEntries([state.library[Number(b.dataset.lib)]])));
   }
 
   const isRunning = () => !!state.job && (state.job.status === "queued" || state.job.status === "running");
@@ -310,7 +381,7 @@
     }
     const btn = $("runBtn");
     btn.disabled = true; btn.textContent = t("running");
-    if (await submit(rows, files, JSON.stringify(readParams($("paramGrid"))), err)) { state.rows = []; renderRows(); }
+    if (await submit(rows, files, JSON.stringify(readParams($("paramGrid"))), err)) { state.rows = []; state.addNote = null; renderRows(); }
     btn.textContent = t("run");
     btn.disabled = state.rows.length === 0 || isRunning();
   }
@@ -391,6 +462,7 @@
     $("warnBox").hidden = true;
     $("resultBody").hidden = true;
     $("downloadBtn").hidden = true;
+    $("reportBtn").hidden = true;
   }
 
   function renderProgress(job) {
@@ -422,6 +494,7 @@
     $("dimBox").hidden = !needsDim;
     $("resultBody").hidden = failed;
     $("downloadBtn").hidden = failed;
+    $("reportBtn").hidden = failed;
     if (needsDim) renderDimensionPrompt(job);
     else if (failed) {
       $("failedMsg").textContent = say(job.error);
@@ -491,9 +564,9 @@
     $("summaryTable").innerHTML = html + "</tbody>";
   }
 
-  function figure(url, caption) {
+  function figure(url, caption, kind) {
     if (!url) return "";
-    return `<figure><img src="${esc(url)}" alt="${esc(caption)}" loading="lazy"><figcaption>${esc(caption)}</figcaption></figure>`;
+    return `<figure data-kind="${kind}"><img src="${esc(url)}" alt="${esc(caption)}" loading="lazy"><figcaption>${esc(caption)}</figcaption></figure>`;
   }
 
   function wireLightbox(host) {
@@ -530,7 +603,7 @@
           <span>${esc(t("drawing.agv"))}: <b>${num(d.agv_circles_removed, 0)}</b></span>
           <span>${esc(t("drawing.groups"))}: <b>${num(d.n_groups, 0)}</b></span>
         </div>
-        <div class="figs">${figure(d.overlay_url, t("drawing.overlay"))}${figure(d.station_overlay_url, t("drawing.stationOverlay"))}</div>
+        <div class="figs">${figure(d.overlay_url, t("drawing.overlay"), "overlay")}${figure(d.station_overlay_url, t("drawing.stationOverlay"), "stations")}</div>
         <h3>${esc(t("drawing.lanes"))}</h3>
         <div class="table-wrap"><table><thead><tr><th>${esc(t("lane.lane"))}</th><th class="num">${esc(t("lane.length"))}</th>
           <th class="num">${esc(t("lane.width"))}</th><th class="num">${esc(t("lane.area"))}</th><th class="num">${esc(t("lane.footprint"))}</th></tr></thead>
@@ -539,6 +612,130 @@
       </section>`;
     }).join("");
     wireLightbox(host);
+  }
+
+  // ------------------------------------------------------------ 核对报告（单个 HTML 文件，发给同事核对）
+  // 与页面同样的数值与排版；叠加图内嵌为 data URI，样式内联，不含脚本，邮件附件可直接打开。
+  const REPORT_CSS = `
+    body.report { background: #fff; }
+    .report header.rep-head { border-bottom: 2px solid var(--ink); padding-bottom: 10px; margin-bottom: 16px; }
+    .report h1 { font-size: 20px; margin: 0 0 6px; }
+    .report .card { border-radius: 8px; }
+    .report table.kv td:first-child { color: var(--ink-2); white-space: nowrap; width: 1%; }
+    .report .sha { font: 11px var(--mono); word-break: break-all; color: var(--ink-2); }
+    .report figure img { max-height: none; cursor: default; }
+    .report .checklist li { margin: 6px 0; }
+    .report table.signoff td { height: 36px; }
+    .report footer { color: var(--ink-3); font-size: 11.5px; margin-top: 18px; }
+    @media print {
+      .report .page { max-width: none; padding: 0; }
+      .report .card { border: 0; padding: 0; margin-bottom: 18px; }
+      .report .drawing { break-before: page; }
+      .report figure, .report tr { break-inside: avoid; }
+    }`;
+
+  async function toDataUrl(url) {
+    const blob = await (await fetch(url)).blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function reportInputs(job) {
+    const rows = job.drawings.map((d, i) => {
+      const r = (job.results || [])[i] || {};
+      const refSrc = d.reference_source === "library" ? t("drawing.refLibrary") : t("drawing.refUser");
+      const scaleSrc = d.mm_per_pt ? t("drawing.scaleManual") : t("drawing.scaleAuto", { ref: num(r.reference_length_mm, 0) });
+      const measured = d.reused ? t("report.reusedFrom", { when: when(d.reused_from) }) : t("report.measuredNow");
+      return `<tr><td><b>${esc(d.name)}</b><br><span class="muted">${esc(d.filename)} · ${mb(d.size_bytes)}</span>
+          <div class="sha">SHA-256 ${esc(d.sha256 || "—")}</div></td>
+        <td class="num">${num(r.reference_length_mm, 0)} mm<br><span class="muted">${esc(refSrc)}</span></td>
+        <td class="num">${num(r.mm_per_pt, 3)} mm/pt<br><span class="muted">${esc(scaleSrc)}</span></td>
+        <td>${esc(measured)}</td></tr>`;
+    }).join("");
+    return `<div class="table-wrap"><table><thead><tr><th>${esc(t("report.drawing"))}</th>
+      <th class="num">${esc(t("drawing.reference"))}</th><th class="num">${esc(t("drawing.scale"))}</th>
+      <th>${esc(t("report.measurement"))}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function reportParams(job) {
+    const p = job.estimate.params;
+    return `<div class="table-wrap"><table class="kv"><tbody>${PARAM_KEYS.map((k) =>
+      `<tr><td>${esc(t(`params.${k}`))}</td><td>${esc(p[k])}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  async function buildReportHtml(job) {
+    const css = await (await fetch("/static/styles.css")).text();
+    const drawings = $("drawings").cloneNode(true);
+    for (const img of drawings.querySelectorAll("img")) {
+      img.src = await toDataUrl(img.getAttribute("src"));
+      img.removeAttribute("loading");
+    }
+    // 报告是静态文件，没有“点击放大”
+    drawings.querySelectorAll("figure[data-kind]").forEach((fig) => {
+      fig.querySelector("figcaption").textContent = t(fig.dataset.kind === "stations" ? "report.stationCaption" : "report.overlayCaption");
+    });
+    const summary = $("summaryTable").closest(".table-wrap").cloneNode(true);
+    const warnings = (job.warnings || []).map((w) => `<li>${esc(say(w))}</li>`).join("");
+    const meta = [
+      [t("report.generated"), when(new Date().toISOString())],
+      [t("report.created"), when(job.created_at)],
+      [t("report.job"), job.id],
+      [t("report.ocr"), t(job.ocr ? "flow.ocrOn" : "flow.ocrOff")],
+    ].map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
+    const checks = [1, 2, 3, 4, 5].map((n) => `<li>${esc(t(`report.check${n}`))}</li>`).join("");
+    return `<!doctype html>
+<html lang="${state.lang === "zh" ? "zh-CN" : "en"}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(t("report.title"))} — ${esc(job.drawings.map((d) => d.name).join(", "))}</title>
+<style>${css}${REPORT_CSS}</style></head>
+<body class="report"><main class="page">
+<header class="rep-head"><h1>${esc(t("report.title"))}</h1>
+  <p class="note">${esc(t("report.lede"))}</p>
+  <table class="kv"><tbody>${meta}</tbody></table></header>
+<section class="card"><h2>${esc(t("report.inputs"))}</h2>${reportInputs(job)}</section>
+${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title"))}</strong><ul>${warnings}</ul></section>` : ""}
+<section class="card"><h2>${esc(t("report.results"))}</h2><div class="kpis">${$("kpis").innerHTML}</div>
+  <h3>${esc(t("summary.title"))}</h3>${summary.outerHTML}</section>
+<section class="card"><h2>${esc(t("report.params"))}</h2>${reportParams(job)}</section>
+<section class="card"><h2>${esc(t("report.drawings"))}</h2>${drawings.innerHTML}</section>
+<section class="card"><h2>${esc(t("report.checklist"))}</h2><ol class="checklist">${checks}</ol>
+  <h3>${esc(t("report.signoff"))}</h3>
+  <table class="signoff"><tbody>
+    <tr><td>${esc(t("report.reviewer"))}</td><td></td><td>${esc(t("report.date"))}</td><td></td></tr>
+    <tr><td>${esc(t("report.verdict"))}</td><td colspan="3"></td></tr>
+    <tr><td>${esc(t("report.remarks"))}</td><td colspan="3"></td></tr>
+  </tbody></table></section>
+<section class="method"><h2 class="h-small">${esc(t("method.title"))}</h2><p>${esc(t("method.body"))}</p></section>
+<footer>${esc(t("report.footer"))}</footer>
+</main></body></html>`;
+  }
+
+  async function downloadReport() {
+    const job = state.job;
+    if (!job || job.status !== "done") return;
+    const btn = $("reportBtn");
+    $("reportError").textContent = ""; $("reportError").classList.remove("ok");
+    btn.disabled = true; btn.textContent = t("report.building");
+    try {
+      const html = await buildReportHtml(job);
+      const day = new Date(job.created_at).toISOString().slice(0, 10).replace(/-/g, "");
+      const api = desktopApi();
+      if (api) { await desktopSave(() => api.save_text(`${t("report.filename")}_${day}.html`, html)); return; }
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+      a.download = `${t("report.filename")}_${day}.html`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    } catch (_) {
+      $("reportError").textContent = t("report.error");
+    } finally {
+      btn.disabled = false; btn.textContent = t("report.button");
+    }
   }
 
   // ------------------------------------------------------------ 重新计算参数
@@ -588,7 +785,8 @@
       <div class="flow-col ${col.stage}">
         <div class="flow-head"><b>${esc(t(`stage.${col.stage}`))}</b><span>${esc(t(`stage.${col.stage}.d`))}</span></div>
         ${col.steps.map((s, si) => {
-          const chips = [`<span class="chip where-${s.where}">${esc(t(`where.${s.where}`))}</span>`];
+          const where = sys.desktop && s.where === "server" ? "local" : s.where;
+          const chips = [`<span class="chip where-${s.where}">${esc(t(`where.${where}`))}</span>`];
           if (s.critical) chips.push(`<span class="chip crit">${esc(t("flow.critical"))}</span>`);
           if (s.cost) chips.push(`<span class="chip cost">${esc(t("flow.costDriver"))}</span>`);
           if (s.ocr) chips.push(`<span class="chip ${sys.ocr_available ? "on" : "off"}">${esc(t(sys.ocr_available ? "flow.ocrOn" : "flow.ocrOff"))}</span>`);
@@ -616,7 +814,8 @@
       const total = o.compute_usd + (disk || 0);
       const fitsCell = fits === null ? `<span class="tag">${esc(t("host.fitsIf", { need: gb(need) }))}</span>`
         : `<span class="tag ${fits ? "ok" : "bad"}">${esc(t(fits ? "host.yes" : "host.no"))}</span>`;
-      html += `<tr class="${fits === false ? "unfit" : ""}"><td><b>${esc(o.name[state.lang] || o.name.zh)}</b></td>
+      const current = sys.desktop ? o.key === "desktop" : false;
+      html += `<tr class="${fits === false ? "unfit" : ""}"><td><b>${esc(o.name[state.lang] || o.name.zh)}</b>${current ? ` <span class="tag ok">${esc(t("host.current"))}</span>` : ""}</td>
         <td class="num">${o.ram_gb === null ? esc(t("host.ownRam")) : `${num(o.ram_gb, o.ram_gb < 1 ? 1 : 0)} GB`}</td>
         <td>${fitsCell}</td>
         <td class="num">US$ ${num(o.compute_usd, 0)}</td>
@@ -631,8 +830,14 @@
       t("sys.noteBandwidth", { gb: h.bandwidth.included_gb, usd: h.bandwidth.usd_per_gb_after }),
       t("sys.noteSource", { src: h.source, date: h.checked }),
     ];
-    if (!sys.password_protected) notes.push(t("sys.notePassword"));
-    $("sysNotes").innerHTML = notes.map((n) => `<li>${esc(n)}</li>`).join("");
+    if (!sys.password_protected && !sys.desktop) notes.push(t("sys.notePassword"));
+    let items = notes.map((n) => `<li>${esc(n)}</li>`);
+    if (sys.desktop) {
+      items = [`<li>${esc(t("sys.noteDesktop", { dir: sys.data_dir }))}${desktopApi() ? ` <button type="button" class="link" id="openDataBtn">${esc(t("desktop.openData"))}</button>` : ""}</li>`, ...items];
+    }
+    $("sysNotes").innerHTML = items.join("");
+    const open = $("openDataBtn");
+    if (open) open.addEventListener("click", () => desktopApi() && desktopApi().open_data_dir());
   }
 
   function renderResources(job) {
@@ -678,11 +883,23 @@
     document.querySelectorAll(".langswitch button").forEach((b) => b.addEventListener("click", () => setLang(b.dataset.lang)));
     const drop = $("drop"), input = $("fileInput");
     input.addEventListener("change", () => { addFiles(input.files); input.value = ""; });
+    const folder = $("folderInput");
+    $("folderBtn").addEventListener("click", () => folder.click());
+    folder.addEventListener("change", () => { addFiles(folder.files); folder.value = ""; });
     ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
     ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-    drop.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
+    drop.addEventListener("drop", async (e) => addFiles(await filesFromDrop(e.dataTransfer)));
+    $("clearBtn").addEventListener("click", () => { state.rows = []; state.addNote = null; renderRows(); });
+    $("libraryAllBtn").addEventListener("click", () => addLibraryEntries(state.library));
     $("runBtn").addEventListener("click", run);
     $("dimBtn").addEventListener("click", continueWithDimensions);
+    $("reportBtn").addEventListener("click", downloadReport);
+    $("downloadBtn").addEventListener("click", (e) => {
+      const api = desktopApi();
+      if (!api) return;                                      // 浏览器：照常下载
+      e.preventDefault();
+      desktopSave(() => api.save_url($("downloadBtn").getAttribute("href")));
+    });
     $("recalcBtn").addEventListener("click", recalc);
     $("newBtn").addEventListener("click", () => { history.pushState(null, "", location.pathname); route(); $("uploadCard").scrollIntoView({ behavior: "smooth" }); });
     $("lightbox").addEventListener("click", (e) => { if (e.target === $("lightbox")) $("lightbox").close(); });

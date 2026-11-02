@@ -1,0 +1,4 @@
+# 桌面版打包（desktop.py / desktop.spec）
+-r requirements-dev.txt
+pywebview>=5.0        # 原生窗口：macOS 用系统 WebKit，Windows 用 Edge WebView2（Win10/11 自带）
+pyinstaller>=6.0

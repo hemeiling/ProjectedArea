@@ -21,7 +21,6 @@ import logging
 import os
 import queue
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -33,9 +32,11 @@ import yaml
 
 from webapp.messages import msg
 from webapp.library import code_version
+from webapp.ocr import child_env, find_tesseract
 
 ESTIMATOR_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ESTIMATOR_DIR)
+if ESTIMATOR_DIR not in sys.path:      # 打包后已在路径中；重复加到最前面会让 OpenCV 的加载器递归导入自身
+    sys.path.insert(0, ESTIMATOR_DIR)
 import estimate  # noqa: E402  (estimator 目录在上面加入路径)
 from webapp import dimension  # noqa: E402
 
@@ -49,7 +50,23 @@ JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 def ocr_available():
     """工位识别需要 Tesseract 程序（pytesseract 只是调用它）。每次任务前检查，装好后无需重启。"""
-    return shutil.which("tesseract") is not None
+    return find_tesseract(ESTIMATOR_DIR) is not None
+
+
+def script_cmd(name):
+    """运行估算程序的命令。桌面版（PyInstaller 打包）里没有单独的 python，由程序自身带 --run-script 运行同一份脚本。"""
+    path = os.path.join(ESTIMATOR_DIR, name)
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-script", path]
+    return [sys.executable, path]
+
+
+_children = set()          # 正在运行的估算子进程：桌面版关闭窗口时一并结束
+
+
+def stop_children():
+    for proc in list(_children):
+        proc.kill()
 
 
 def load_base_config():
@@ -217,10 +234,12 @@ def _reap(proc):
 
 def _run(cmd, timeout_s, on_line=None):
     """运行估算程序；逐行回调 stdout。返回 (退出码, stderr 末尾, 实测资源 {seconds, peak_rss_mb})。"""
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    env = child_env(dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", PYTHONUTF8="1"), ESTIMATOR_DIR)
     started = time.monotonic()
     proc = subprocess.Popen(cmd, cwd=ESTIMATOR_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace")
+                            text=True, encoding="utf-8", errors="replace",
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    _children.add(proc)
     err_chunks, timed_out = [], threading.Event()
     t_err = threading.Thread(target=lambda: err_chunks.append(proc.stderr.read()), daemon=True)
     t_err.start()
@@ -237,6 +256,7 @@ def _run(cmd, timeout_s, on_line=None):
         peak_mb = _reap(proc)
     finally:
         timer.cancel()
+        _children.discard(proc)
     t_err.join(timeout=5)
     if timed_out.is_set():
         raise Failed(msg("timeout", minutes=timeout_s // 60))
@@ -254,7 +274,7 @@ def _measure(store, jid, todo, cfg_path, done_before, total):
             store.update(jid, progress=dict(done=done_before + done[0], total=total))
 
     out = os.path.join(store.dir(jid), "results")
-    code, err, usage = _run([sys.executable, os.path.join(ESTIMATOR_DIR, "estimate_footprint.py"), cfg_path, "--out", out],
+    code, err, usage = _run(script_cmd("estimate_footprint.py") + [cfg_path, "--out", out],
                      MEASURE_TIMEOUT_S, on_line)
     if code != 0:
         d = todo[min(done[0], len(todo) - 1)]
@@ -272,7 +292,7 @@ def _measure(store, jid, todo, cfg_path, done_before, total):
 def build_workbook(store, jid, cfg_path):
     """(重新)生成工作簿，返回实测资源。参数修改后只需重跑这一步，无需重新测量。"""
     jdir = store.dir(jid)
-    code, err, usage = _run([sys.executable, os.path.join(ESTIMATOR_DIR, "build_workbook.py"), cfg_path,
+    code, err, usage = _run(script_cmd("build_workbook.py") + [cfg_path,
                       os.path.join(jdir, "results", "results.json"), os.path.join(jdir, "workbook.xlsx")],
                      WORKBOOK_TIMEOUT_S)
     if code != 0:

@@ -260,6 +260,9 @@ def test_ui_strings_exist_in_both_languages():
     for s in re.findall(r'stage: "(\w+)"', flow):
         used |= {f"stage.{s}", f"stage.{s}.d"}
     used |= {f"where.{w}" for w in re.findall(r'where: "(\w+)"', flow)}
+    checks = re.search(r"\[([\d, ]+)\]\.map\(\(n\) => `<li>\$\{esc\(t\(`report\.check", js)
+    assert checks, "report checklist not found"
+    used |= {f"report.check{n.strip()}" for n in checks.group(1).split(",")}
     assert used <= set(i18n["zh"]), used - set(i18n["zh"])
 
 
@@ -277,3 +280,12 @@ def test_system_endpoint_reports_hosting_usage_and_measured_resources(client, la
     # 再次计算同一文件：复用缓存，不测量
     again = wait_for(client, submit(client, [layout_pdf], [REFERENCE_MM]).json()["job_id"])
     assert again["resources"]["measure"] is None and again["resources"]["reused"] == 1
+
+
+def test_upload_limits_are_explained(client, layout_pdf, monkeypatch):
+    from webapp import app as A
+    r = submit_rows(client, [dict(file=0)] * (A.MAX_DRAWINGS + 1))
+    assert r.status_code == 400 and r.json()["error"]["code"] == "too_many_files"
+    monkeypatch.setattr(A, "MAX_UPLOAD_MB", 0.001)                       # 合成图纸约 2 KB
+    r = submit(client, [layout_pdf], [REFERENCE_MM])
+    assert r.status_code == 413 and r.json()["error"]["code"] == "upload_too_large"

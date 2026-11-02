@@ -30,6 +30,11 @@
       <span class="drop-icon" aria-hidden="true">PDF</span>
       <span data-i18n="upload.drop"></span>
     </label>
+    <div class="pick-row">
+      <button type="button" id="folderBtn" data-i18n="upload.pickFolder"></button>
+      <input type="file" id="folderInput" webkitdirectory multiple hidden>
+      <span class="note" id="addNote" role="status"></span>
+    </div>
     <p class="note" data-i18n="upload.req"></p>
 
     <div class="table-wrap" id="fileTableWrap" hidden>
@@ -46,6 +51,10 @@
         <tbody id="fileRows"></tbody>
       </table>
       <p class="note"><span data-i18n="ref.hint"></span>　·　<span data-i18n="mpp.hint"></span></p>
+      <div class="pick-row">
+        <span class="note" id="rowCount"></span>
+        <button type="button" class="link" id="clearBtn" data-i18n="upload.clear"></button>
+      </div>
     </div>
 
     <details class="params" id="paramsBox">
@@ -77,11 +86,13 @@
       <h2 data-i18n="results.title"></h2>
       <div class="result-actions">
         <a class="button primary" id="downloadBtn" href="#" download data-i18n="results.download"></a>
+        <button type="button" id="reportBtn" data-i18n="report.button"></button>
         <button type="button" id="newBtn" data-i18n="results.new"></button>
       </div>
     </div>
     <p class="note"><span data-i18n="results.downloadNote"></span> <span data-i18n="results.share"></span></p>
     <p class="note" id="resourceLine" hidden></p>
+    <p class="error" id="reportError" role="alert"></p>
 
     <div id="dimBox" class="alert alert-amber" hidden>
       <strong data-i18n="dim.title"></strong>
@@ -128,6 +139,7 @@
   <section class="card" id="libraryCard">
     <h2 class="h-small" data-i18n="library.title"></h2>
     <p class="note" data-i18n="library.note"></p>
+    <div class="pick-row"><button type="button" id="libraryAllBtn" data-i18n="library.addAll" hidden></button></div>
     <ul class="recent library" id="libraryList"></ul>
   </section>
 

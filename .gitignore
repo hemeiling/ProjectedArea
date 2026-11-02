@@ -10,3 +10,7 @@ __pycache__/
 .pytest_cache/
 .claude/
 .DS_Store
+# 桌面版打包输出；vendor/ 放打包时附带的第三方程序（如 Tesseract）
+build/
+dist/
+vendor/

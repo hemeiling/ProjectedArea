@@ -9,6 +9,8 @@
 每张图纸只需提供: PDF 路径 + 图上标注的一个总尺寸（mm）。
 """
 import argparse, json, math, os, sys
+from array import array
+from collections import namedtuple
 import numpy as np
 import yaml
 import pymupdf
@@ -19,35 +21,112 @@ from PIL import Image, ImageDraw
 
 
 # ---------------------------------------------------------------- 1. 读取矢量
+def each_drawing(page, fn):
+    """逐条把页面矢量路径（page.get_cdrawings() 的原始字典）交给 fn，不在内存中保留整页列表。
+    A3 大图有 60 多万条路径，page.get_drawings() 一次性生成的 Point/Rect 对象要占近 2 GB。
+    列表模式下 PyMuPDF 把“填充 f + 紧随其后、折线相同的描边 s”合并为一条 fs（文字字形），
+    回调模式不合并；这里按同样的规则合并，逐条结果与 page.get_drawings() 一致。"""
+    prev = None
+
+    def take(d):
+        nonlocal prev
+        if prev is not None and d["type"] == "s" and prev["type"] == "f" and prev["items"] == d["items"]:
+            for k, v in d.items():
+                prev.setdefault(k, v)
+            prev["type"] = "fs"
+            fn(prev); prev = None
+            return
+        if prev is not None:
+            fn(prev)
+        prev = d
+
+    page.get_cdrawings(callback=take)
+    if prev is not None:
+        fn(prev)
+
+
+class Box(namedtuple("Box", "x0 y0 x1 y1")):
+    """路径外框；width / height 的定义与 pymupdf.Rect 相同"""
+    __slots__ = ()
+    width = property(lambda b: max(0, b.x1 - b.x0))
+    height = property(lambda b: max(0, b.y1 - b.y0))
+
+
+class Paths:
+    """页面矢量路径的紧凑存储：坐标放在数组里，迭代时才逐条生成 (颜色, 外框 Box, 折线列表)，
+    折线为 [(x, y), ...]。另存文字字形 glyphs = [(Rect, 填充色)] 供工位识别使用。"""
+
+    def __init__(self):
+        self.cols, self.box = [], array("d")     # 每条路径：颜色；外框 x0 y0 x1 y1
+        self.xy = array("d")                     # 所有折线顶点 x y
+        self.pl_end = array("q")                 # 每条折线末顶点之后的序号
+        self.path_end = array("q")               # 每条路径末折线之后的序号
+        self.glyphs = []
+        self._col = {}
+
+    def add(self, col, rect, polylines):
+        self.cols.append(self._col.setdefault(col, col))
+        self.box.extend(rect)
+        for pl in polylines:
+            for p in pl:
+                self.xy.extend(p)
+            self.pl_end.append(len(self.xy) // 2)
+        self.path_end.append(len(self.pl_end))
+
+    def boxes(self):
+        b = self.box
+        return (Box(b[i], b[i + 1], b[i + 2], b[i + 3]) for i in range(0, len(b), 4))
+
+    def __iter__(self):
+        xy, pe = self.xy, self.pl_end
+        j = v = 0
+        for col, r, k in zip(self.cols, self.boxes(), self.path_end):
+            polys = []
+            for e in pe[j:k]:
+                polys.append(list(zip(xy[2 * v:2 * e:2], xy[2 * v + 1:2 * e:2]))); v = e
+            j = k
+            yield col, r, polys
+
+
 def load_paths(pdf_path):
-    """读取 PDF 第一页所有矢量路径 -> [(颜色, 外框, 折线列表)]"""
+    """读取 PDF 第一页所有矢量路径 -> Paths（逐条为 (颜色, 外框, 折线列表)）"""
     page = pymupdf.open(pdf_path)[0]
-    paths = []
-    for d in page.get_drawings():
+    paths = Paths()
+
+    def add(d):
+        if d["type"] == "fs":          # 文字字形（填充+描边）不是设备，单独处理
+            paths.glyphs.append((pymupdf.Rect(d["rect"]), tuple(round(c, 2) for c in (d.get("fill") or (0, 0, 0)))))
+            return
         col = d.get("color") or d.get("fill") or (0, 0, 0)
         col = tuple(round(c, 2) for c in col)
         polylines = []
         for it in d["items"]:
             k = it[0]
             if k == "l":
-                polylines.append([it[1], it[2]])
+                polylines.append((it[1], it[2]))
             elif k == "c":                       # 贝塞尔曲线: 用起止点近似
-                polylines.append([it[1], it[4]])
+                polylines.append((it[1], it[4]))
             elif k == "re":
-                r = it[1]; polylines.append([r.tl, r.tr, r.br, r.bl, r.tl])
+                r = pymupdf.Rect(it[1]).normalize(); polylines.append((r.tl, r.tr, r.br, r.bl, r.tl))
             elif k == "qu":
-                q = it[1]; polylines.append([q.ul, q.ur, q.lr, q.ll, q.ul])
-        if d["type"] == "fs":          # 文字字形（填充+描边）不是设备，单独处理
-            continue
-        paths.append((col, d["rect"], polylines))
+                q = pymupdf.Quad(it[1]); polylines.append((q.ul, q.ur, q.lr, q.ll, q.ul))
+        paths.add(col, d["rect"], polylines)
+
+    each_drawing(page, add)
     return page, paths
+
+
+def dist(a, b):
+    """两点距离，算法与 abs(pymupdf.Point - Point) 相同"""
+    dx, dy = a[0] - b[0], a[1] - b[1]
+    return math.sqrt(dx * dx + dy * dy)
 
 
 # ---------------------------------------------------------------- 2. 比例尺
 def longest_line(paths, line_ratio=0.03):
     """图上最长的“线状”路径 -> (长度 pt, 外框)；没有则 (0, None)"""
     best, rect = 0.0, None
-    for _, r, _ in paths:
+    for r in paths.boxes():
         L, s = max(r.width, r.height), min(r.width, r.height)
         if L > 0 and s / L <= line_ratio and L > best:
             best, rect = L, r
@@ -73,7 +152,7 @@ def rasterize(paths, W, H, S, keep, width=1):
         if not keep(col, r):
             continue
         for pl in polys:
-            pts = [(p.x * S, p.y * S) for p in pl]
+            pts = [(x * S, y * S) for x, y in pl]
             d.line(pts, fill=255, width=width)
     return np.array(im) > 0
 
@@ -81,7 +160,7 @@ def rasterize(paths, W, H, S, keep, width=1):
 def building_box(paths, ref_pt, min_frac):
     """长线状路径（墙/柱网/边界，长度 ≥ min_frac×总尺寸）的外包框 = 厂房范围"""
     xs0, ys0, xs1, ys1 = [], [], [], []
-    for _, r, _ in paths:
+    for r in paths.boxes():
         if max(r.width, r.height) >= min_frac * ref_pt:
             xs0.append(r.x0); ys0.append(r.y0); xs1.append(r.x1); ys1.append(r.y1)
     return min(xs0), min(ys0), max(xs1), max(ys1)
@@ -95,19 +174,35 @@ def hatch_mask(paths, W, H, S, mm, cfg):
     for _, _, polys in paths:
         for pl in polys:
             for a, b in zip(pl, pl[1:]):
-                ang = abs(math.degrees(math.atan2(b.y - a.y, b.x - a.x))) % 180
-                if abs(b - a) < min_len:
+                ang = abs(math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))) % 180
+                if dist(b, a) < min_len:
                     continue
                 if cfg["angle_min"] <= ang <= cfg["angle_max"] or \
                    180 - cfg["angle_max"] <= ang <= 180 - cfg["angle_min"]:
-                    d.line([(a.x * S, a.y * S), (b.x * S, b.y * S)], fill=255, width=1)
+                    d.line([(a[0] * S, a[1] * S), (b[0] * S, b[1] * S)], fill=255, width=1)
     m = np.array(diag) > 0
     k = max(1, int(cfg["close_mm"] / mm * S))
     m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) > 0
-    lab, n = ndi.label(m)
+    lab, _ = ndi.label(m)
+    objs = ndi.find_objects(lab)
     px_m2 = (mm / S) ** 2 / 1e6
-    sizes = ndi.sum(m, lab, range(1, n + 1)) * px_m2
-    return np.isin(lab, np.where(sizes >= cfg["min_area_m2"])[0] + 1)
+    sizes = label_sizes(lab, objs) * px_m2
+    return select_labels(lab, objs, np.where(sizes >= cfg["min_area_m2"])[0] + 1)
+
+
+def label_sizes(lab, objs):
+    """各连通区像素数（= ndi.sum(mask, lab, range(1, n + 1))）。逐个外框切片计数，
+    不生成整图大小的 int64 / float64 临时数组。"""
+    return np.array([np.count_nonzero(lab[sl] == i) for i, sl in enumerate(objs, 1)], dtype=np.int64)
+
+
+def select_labels(lab, objs, ids):
+    """属于 ids 中连通区的像素（= np.isin(lab, ids)），同样按外框切片计算"""
+    out = np.zeros(lab.shape, bool)
+    for i in ids:
+        sl = objs[i - 1]
+        out[sl] |= lab[sl] == i
+    return out
 
 
 # ---------------------------------------------------------------- 4. 主流程
@@ -134,54 +229,67 @@ def measure(drawing, cfg, out_dir):
     max_ext = cfg["max_path_extent_mm"] / mm
     route_max = cfg["route_max_segment_mm"] / mm
 
-    kept = []
-    for col, r, polys in paths:
-        if tuple(col) in excl or min(col) >= cfg["near_white"]:
-            continue                                     # 安全围栏/近白色注释
-        if max(r.width, r.height) > max_ext:
-            continue                                     # 墙、轴线、尺寸线
-        cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-        if not (bx0 <= cx <= bx1 and by0 <= cy <= by1):
-            continue                                     # 厂房外：标题、尺寸标注
-        if hm[min(H - 1, int(cy * S)), min(W - 1, int(cx * S))]:
-            continue                                     # 斜线填充区内：工位标签、墙
-        if is_neutral_grey(col, gl, gh):                 # 灰色: 去掉长的通道/路线线段
-            polys = [pl for pl in polys if len(pl) == 5 or abs(pl[0] - pl[-1]) < route_max]
-        kept.append((col, r, polys))
+    def kept():                                          # 每次重新生成，不在内存中保留整份列表
+        for col, r, polys in paths:
+            if tuple(col) in excl or min(col) >= cfg["near_white"]:
+                continue                                 # 安全围栏/近白色注释
+            if max(r.width, r.height) > max_ext:
+                continue                                 # 墙、轴线、尺寸线
+            cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+            if not (bx0 <= cx <= bx1 and by0 <= cy <= by1):
+                continue                                 # 厂房外：标题、尺寸标注
+            if hm[min(H - 1, int(cy * S)), min(W - 1, int(cx * S))]:
+                continue                                 # 斜线填充区内：工位标签、墙
+            if is_neutral_grey(col, gl, gh):             # 灰色: 去掉长的通道/路线线段
+                polys = [pl for pl in polys if len(pl) == 5 or dist(pl[0], pl[-1]) < route_max]
+            yield col, r, polys
 
-    m = rasterize(kept, W, H, S, lambda c, r: True)
+    m = rasterize(kept(), W, H, S, lambda c, r: True)
 
     # 4.4 AGV 转弯圆（灰色细线圆）—— OpenCV 霍夫圆检测后擦除
     n_circles = 0
     ac = cfg["agv_circles"]
     if ac["enabled"]:
-        grey = rasterize(kept, W, H, S, lambda c, r: is_neutral_grey(c, gl, gh)).astype(np.uint8) * 255
+        grey = rasterize(kept(), W, H, S, lambda c, r: is_neutral_grey(c, gl, gh)).astype(np.uint8) * 255
         rmin, rmax = int(ac["min_radius_mm"] / px_mm), int(ac["max_radius_mm"] / px_mm)
-        cs = cv2.HoughCircles(cv2.GaussianBlur(grey, (3, 3), 0), cv2.HOUGH_GRADIENT, dp=1,
-                              minDist=rmin * 2, param1=50, param2=ac["vote_threshold"],
-                              minRadius=rmin, maxRadius=rmax)
+        # 多线程时每个线程各有一份整图大小的累加器（每线程约 64 MB）；单线程只占一份，结果相同
+        nt = cv2.getNumThreads(); cv2.setNumThreads(0)
+        try:
+            cs = cv2.HoughCircles(cv2.GaussianBlur(grey, (3, 3), 0), cv2.HOUGH_GRADIENT, dp=1,
+                                  minDist=rmin * 2, param1=50, param2=ac["vote_threshold"],
+                                  minRadius=rmin, maxRadius=rmax)
+        finally:
+            cv2.setNumThreads(nt)
         if cs is not None:
             er = np.zeros_like(grey)
             for x, y, rr in cs[0]:
                 cv2.circle(er, (int(x), int(y)), int(rr), 255, 3); n_circles += 1
             m &= ~(er > 0)
+            del er
+        del grey
 
     # 4.5 闭合小缺口 -> 填充设备轮廓内部（只填小于阈值的封闭区，避免把通道围合区算进去）
     g = max(1, int(round(cfg["gap_close_mm"] / px_mm)))
     closed = ndi.binary_closing(ndi.binary_dilation(m), structure=np.ones((g, g)))
     holes = ndi.binary_fill_holes(closed) & ~closed
-    hl, hn = ndi.label(holes)
-    hs = ndi.sum(holes, hl, range(1, hn + 1)) * px_m2
-    filled = closed | np.isin(hl, np.where(hs < cfg["max_hole_fill_m2"])[0] + 1)
+    del m
+    hl, _ = ndi.label(holes)
+    del holes
+    hobjs = ndi.find_objects(hl)
+    hs = label_sizes(hl, hobjs) * px_m2
+    filled = closed | select_labels(hl, hobjs, np.where(hs < cfg["max_hole_fill_m2"])[0] + 1)
+    del closed, hl, hobjs
     # 去掉细线结构（墙线、尺寸线、通道虚线、箭头）：宽度 < min_feature_mm 的部分开运算去除
     k = max(1, int(round(cfg["min_feature_mm"] / px_mm)))
     filled = cv2.morphologyEx(filled.astype(np.uint8), cv2.MORPH_OPEN, np.ones((k, k), np.uint8)) > 0
 
     # 4.6 连通分组并统计
     lab, n = ndi.label(filled)
+    objs = ndi.find_objects(lab)
+    px_n = label_sizes(lab, objs)
     groups = []
-    for i, sl in enumerate(ndi.find_objects(lab)):
-        area = (lab[sl] == i + 1).sum() * px_m2
+    for i, sl in enumerate(objs):
+        area = px_n[i] * px_m2
         if area < cfg["min_group_m2"]:
             continue
         h, w = (sl[0].stop - sl[0].start) * px_mm, (sl[1].stop - sl[1].start) * px_mm
@@ -189,14 +297,15 @@ def measure(drawing, cfg, out_dir):
                            bbox_m2=round(h * w / 1e6, 2), footprint_m2=round(area, 2),
                            x0_pt=round(sl[1].start / S, 1), y0_pt=round(sl[0].start / S, 1)))
     groups.sort(key=lambda g_: -g_["footprint_m2"])
-    small = [i + 1 for i, sl in enumerate(ndi.find_objects(lab)) if (lab[sl] == i + 1).sum() * px_m2 < cfg["min_group_m2"]]
-    filled[np.isin(lab, small)] = False          # 碎片同时从工位分摊中去掉，保证合计一致
+    small = [i + 1 for i in range(n) if px_n[i] * px_m2 < cfg["min_group_m2"]]
+    filled[select_labels(lab, objs, small)] = False          # 碎片同时从工位分摊中去掉，保证合计一致
     total = round(sum(g_["footprint_m2"] for g_ in groups), 1)
 
     # 4.7 基准：产线外包矩形（总长 × 总宽），保留原粗算口径作对比
     # 线体 = 厂房内被斜线填充带隔开的区域；每条线体单独取外包矩形，再相加
-    big = [i + 1 for i, sl in enumerate(ndi.find_objects(lab)) if (lab[sl] == i + 1).sum() * px_m2 >= cfg["envelope_min_group_m2"]]
-    bigmask = np.isin(lab, big)
+    big = [i + 1 for i in range(n) if px_n[i] * px_m2 >= cfg["envelope_min_group_m2"]]
+    bigmask = select_labels(lab, objs, big)
+    del lab, objs
     along = "y" if (by1 - by0) >= (bx1 - bx0) else "x"
     y0i, y1i, x0i, x1i = int(by0 * S), int(by1 * S), int(bx0 * S), int(bx1 * S)
     sub = hm[y0i:y1i, x0i:x1i]
@@ -227,7 +336,7 @@ def measure(drawing, cfg, out_dir):
     station_rows = []
     labels = None
     if cfg["stations"]["enabled"]:
-        st = stn.detect_stations(page, mm, cfg["stations"])
+        st = stn.detect_stations(page, paths.glyphs, mm, cfg["stations"])
         ovs = drawing.get("station_overrides", [])
         if st:
             area, labels, cols = stn.allocate(filled, S, st, mm, cfg["stations"], along)
@@ -253,7 +362,10 @@ def measure(drawing, cfg, out_dir):
     bg = page.get_pixmap(matrix=pymupdf.Matrix(S, S))
     a = np.frombuffer(bg.samples, np.uint8).reshape(bg.h, bg.w, bg.n)[:, :, :3].copy()
     a = a[:H, :W]; f = filled[:a.shape[0], :a.shape[1]]
-    a[f] = (0.5 * a[f] + [127, 0, 0]).astype(np.uint8)
+    band = 256                                   # 逐像素混色按行带分块，避免整图大小的 float64 临时数组
+    for y in range(0, a.shape[0], band):
+        ab, fb = a[y:y + band], f[y:y + band]
+        ab[fb] = (0.5 * ab[fb] + [127, 0, 0]).astype(np.uint8)
     ov = Image.fromarray(a); ov.thumbnail((1400, 2000))
     ov_path = os.path.join(out_dir, f"{drawing['id']}_overlay.png"); ov.save(ov_path)
     st_path = None
@@ -262,8 +374,10 @@ def measure(drawing, cfg, out_dir):
         pal = rng.integers(60, 230, size=(len(st), 3))
         b2 = np.frombuffer(bg.samples, np.uint8).reshape(bg.h, bg.w, bg.n)[:, :, :3].copy()[:H, :W]
         L2 = labels[:b2.shape[0], :b2.shape[1]]
-        msk = L2 >= 0
-        b2[msk] = (0.35 * b2[msk] + 0.65 * pal[L2[msk]]).astype(np.uint8)
+        for y in range(0, b2.shape[0], band):
+            bb, Lb = b2[y:y + band], L2[y:y + band]
+            msk = Lb >= 0
+            bb[msk] = (0.35 * bb[msk] + 0.65 * pal[Lb[msk]]).astype(np.uint8)
         im2 = Image.fromarray(b2); d2 = ImageDraw.Draw(im2)
         for k, s_ in enumerate(st):
             col_ = tuple(int(v) for v in pal[k])
