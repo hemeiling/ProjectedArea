@@ -149,12 +149,12 @@ MESSAGES = {
         "「{name}」DXF 未声明单位，沿用该文件上次的单位 {unit}（{when}）。如不正确请选择后重新计算。",
         "\"{name}\" does not declare its units; reused this file's previous unit {unit} ({when}). "
         "If that is wrong, choose the unit and run again."),
-    "dxf_envelope_overall": (
-        "「{name}」DXF 的基准面积（总长×宽）是全部计入设备的整体外包矩形，尚未按线体分开："
-        "有多条并行线体或多个区域时会偏大（含其间的通道），而公摊工时默认按它计算。请核对。",
-        "For \"{name}\" the DXF baseline (length × width) is one bounding rectangle around all counted "
-        "equipment, not split by line: with parallel lines or separate areas it is too large (it includes the "
-        "aisles between them), and shared labour hours use it by default. Please check."),
+    "dxf_lanes": (
+        "「{name}」DXF 基准（总长×宽）按线体分别计算：识别为 {n} 条线体。与产线长边平行、贯穿全图、宽 ≥ {gap} m 的空走道"
+        "视为线体之间的分隔，不计入。公摊工时默认按基准计算，请在叠加图中核对青色线体框（L1、L2…）。",
+        "For \"{name}\" the DXF baseline (length × width) is measured per line: {n} line(s) found. An empty aisle "
+        "at least {gap} m wide, parallel to the long side and running the full length, separates lines and is not "
+        "counted. Shared labour hours use the baseline by default; check the teal line boxes (L1, L2…) on the overlay."),
     "dxf_set_aside": (
         "「{name}」移动设备 {mobile} m²、待定 {unresolved} m² 单列，未计入投影面积（只计落在固定设备轮廓之外的部分）；"
         "见叠加图：紫框 = 移动，橙框 = 待定。",

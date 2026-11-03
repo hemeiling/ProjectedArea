@@ -47,6 +47,16 @@ IMAGE_KINDS = {"overlay": ("results", "{id}_overlay.png"), "stations": ("results
                "dimension": ("dim", "{id}.png")}
 
 
+class RevalidatedStatic(StaticFiles):
+    """静态文件（脚本、样式）每次都向服务器确认是否有新版本：未改动时 304、不重传；
+    程序更新后浏览器不会继续用缓存里的旧脚本去配新的接口。"""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 class ApiError(Exception):
     def __init__(self, status, message):
         super().__init__(message["en"])
@@ -358,5 +368,5 @@ def create_app(data_dir=None, desktop=False):
                 raise ApiError(500, e.message)
         return JSONResponse(_job_view(job), headers=NO_CACHE)
 
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", RevalidatedStatic(directory=STATIC_DIR), name="static")
     return app

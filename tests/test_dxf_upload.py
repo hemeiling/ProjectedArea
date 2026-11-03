@@ -58,7 +58,8 @@ def test_dxf_with_declared_units_end_to_end(client_dir, tmp_path):
     assert res["n_equipment"] == MACHINES and res["transform_check_failures"] == 0
     assert res["reference_length_mm"] is None and res["mm_per_pt"] is None
     codes = [w["code"] for w in job["warnings"]]
-    assert "dxf_envelope_overall" in codes and "dxf_no_stations" in codes and "no_stations" not in codes
+    assert "dxf_lanes" in codes and "dxf_no_stations" in codes and "no_stations" not in codes
+    assert len(res["envelope"]["lanes"]) == 1 and res["envelope"]["gap_mm"] == 3000      # 一排设备 = 一条线体
 
     e = job["estimate"]["drawings"][0]
     assert e["fine_source"] == "footprint" and e["fine_m2"] == res["footprint_m2"]

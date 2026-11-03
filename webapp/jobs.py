@@ -379,7 +379,8 @@ def build_workbook(store, jid, cfg_path):
 
 def _dxf_warnings(d):
     """DXF 结果中需要人工注意的地方"""
-    out = [msg("dxf_envelope_overall", name=d["name"])]
+    env = d.get("envelope") or {}
+    out = [msg("dxf_lanes", name=d["name"], n=len(env.get("lanes") or []), gap=f"{(env.get('gap_mm') or 0) / 1000:g}")]
     if d.get("mobile_m2") or d.get("unresolved_m2"):
         out.append(msg("dxf_set_aside", name=d["name"], mobile=d.get("mobile_m2") or 0,
                        unresolved=d.get("unresolved_m2") or 0))

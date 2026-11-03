@@ -9,7 +9,9 @@ DXF 产线布局 -> 设备投影面积（按图块计算）。
      -> 填充 < max_hole_fill_m2 的内部 -> 开运算去掉 < min_feature_mm 的细线 -> 轮廓多边形。
      同一图块的多次插入共用结果，再按各自的变换（平移、旋转、镜像、缩放、拉伸方向）放到图上。
   4. 所有设备外轮廓取并集（重叠只算一次；设备之间围出的空地不填），去掉 < min_group_m2 的碎片 = 投影面积。
-  5. 输出与 estimate_footprint.py 相同格式的结果（面积、线体外包尺寸、叠加图），另附每个插入的明细与原因。
+  5. 基准（总长 × 总宽）按线体计算：与产线长边平行、贯穿整张图、宽 ≥ lane_gap_mm 的空走道把设备分成几条线体，
+     每条线体取 ≥ envelope_min_group_m2 的设备块的外包矩形，再相加（不含线体之间的走道）。
+  6. 输出与 estimate_footprint.py 相同格式的结果（面积、线体外包尺寸、叠加图），另附每个插入的明细与原因。
 
 用法：
     python dxf_footprint.py config.yaml --out results            # 配置中 drawings 带 dxf: 的图纸
@@ -27,7 +29,7 @@ import numpy as np
 from ezdxf import bbox as ezbbox
 import yaml
 from ezdxf import disassemble, path as ezpath, units as ezunits
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from scipy import ndimage as ndi
 from shapely import affinity
 from shapely.geometry import MultiPolygon, Polygon
@@ -414,15 +416,8 @@ def measure(drawing, conf, out_dir):
 
     unresolved_m2, mobile_m2 = outside_fixed("unresolved"), outside_fixed("mobile")
 
-    # 基准：设备外包矩形（总长 × 总宽）
-    if kept:
-        bx0, by0, bx1, by1 = footprint.bounds
-        a_, b_ = (bx1 - bx0) * unit / 1000, (by1 - by0) * unit / 1000
-        L, Wd = max(a_, b_), min(a_, b_)
-        envelope = dict(lanes=[dict(lane=1, length_m=round(L, 1), width_m=round(Wd, 1), area_m2=round(L * Wd, 1),
-                                    footprint_m2=total)], area_m2=round(L * Wd, 1))
-    else:
-        envelope = dict(lanes=[], area_m2=0.0)
+    # 基准：按线体分别取设备外包矩形（总长 × 总宽）再相加
+    envelope = line_envelope(kept, unit, ex["envelope_min_group_m2"], cfg["lane_gap_mm"])
     duplicated = sum(r["area_m2"] for r in rows if r["cls"] == "equipment") - round(union.area * to_m2, 3)
 
     os.makedirs(out_dir, exist_ok=True)
@@ -435,7 +430,7 @@ def measure(drawing, conf, out_dir):
     view = ((min(b[0] for b in shown), min(b[1] for b in shown), max(b[2] for b in shown), max(b[3] for b in shown))
             if shown else region)
     draw_overlay(ov_path, inserts, rows, cache, footprint, frame, [b or e for b, e in zip(boxes, extents)], loose_list,
-                 region, view)
+                 region, view, [l_["box"] for l_ in envelope["lanes"]])
     groups = sorted((dict(footprint_m2=round(p.area * to_m2, 2),
                           length_mm=round(max(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1]) * unit),
                           width_mm=round(min(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1]) * unit))
@@ -465,14 +460,61 @@ def measure(drawing, conf, out_dir):
                 seconds=dict(load=round(load_s, 1), total=round(time.time() - t0, 1)))
 
 
+# ---------------------------------------------------------------- 4b. 线体基准
+def line_envelope(parts, unit, min_box_m2, gap_mm):
+    """基准“总长 × 总宽”，按线体分开。parts：计入的设备块（图纸单位、世界坐标），unit：每单位 mm。
+
+    线体之间的分隔 = 与产线长边平行、贯穿整张图、宽 ≥ gap_mm 的空走道（PDF 方法中的填充分隔带同理）：
+    把 ≥ min_box_m2 的设备块投影到横向（与长边垂直）上，相邻投影区间相距 ≥ gap_mm 处分开。只比较坐标差，
+    与图纸在世界坐标中的位置无关。更小的设备块按横向中心归入所在（或最近的）线体，只计入面积，不扩大外包。
+    返回 dict(lanes, area_m2, along, gap_mm)；每条线体带 box（图纸单位）供叠加图与核对。"""
+    to_m2 = (unit / 1000) ** 2
+    if not parts:
+        return dict(lanes=[], area_m2=0.0, along=None, gap_mm=gap_mm)
+    big = [p for p in parts if p.area * to_m2 >= min_box_m2] or parts
+    x0, y0 = min(p.bounds[0] for p in big), min(p.bounds[1] for p in big)
+    x1, y1 = max(p.bounds[2] for p in big), max(p.bounds[3] for p in big)
+    along = "x" if (x1 - x0) >= (y1 - y0) else "y"
+    lo_k, hi_k = (1, 3) if along == "x" else (0, 2)            # 横向坐标在 bounds 中的位置
+    gap = gap_mm / unit
+    groups, reach = [], None
+    for p in sorted(big, key=lambda p_: p_.bounds[lo_k]):
+        if groups and p.bounds[lo_k] - reach < gap:
+            groups[-1].append(p)
+            reach = max(reach, p.bounds[hi_k])
+        else:
+            groups.append([p])
+            reach = p.bounds[hi_k]
+    bands = [(min(p.bounds[lo_k] for p in g), max(p.bounds[hi_k] for p in g)) for g in groups]
+    area = [0.0] * len(groups)
+    for p in parts:                                           # 全部计入的设备块（含小块）按横向中心归入线体
+        c = (p.bounds[lo_k] + p.bounds[hi_k]) / 2
+        k = min(range(len(bands)), key=lambda i: 0 if bands[i][0] <= c <= bands[i][1]
+                else min(abs(c - bands[i][0]), abs(c - bands[i][1])))
+        area[k] += p.area * to_m2
+    lanes = []
+    # 线体编号：沿 x 的产线从上到下，沿 y 的产线从左到右（与叠加图中看到的顺序一致）
+    order = sorted(range(len(groups)), key=lambda i: -bands[i][1] if along == "x" else bands[i][0])
+    for n, i in enumerate(order, 1):
+        g = groups[i]
+        bx = (min(p.bounds[0] for p in g), min(p.bounds[1] for p in g), max(p.bounds[2] for p in g), max(p.bounds[3] for p in g))
+        a_, b_ = (bx[2] - bx[0]) * unit / 1000, (bx[3] - bx[1]) * unit / 1000
+        L, Wd = (a_, b_) if along == "x" else (b_, a_)
+        lanes.append(dict(lane=n, length_m=round(L, 1), width_m=round(Wd, 1), area_m2=round(L * Wd, 1),
+                          footprint_m2=round(area[i], 1), box=[round(v, 1) for v in bx]))
+    return dict(lanes=lanes, area_m2=round(sum(l_["area_m2"] for l_ in lanes), 1), along=along, gap_mm=gap_mm)
+
+
 # ---------------------------------------------------------------- 5. 叠加图
 CLASS_COLOURS = {"equipment": (40, 160, 70), "excluded": (214, 39, 40), "unresolved": (230, 140, 0),
                  "mobile": (148, 103, 189)}
+LANE_COLOUR = (0, 150, 170)
 
 
-def draw_overlay(path, inserts, rows, cache, footprint, frame, boxes, loose_list, region, view, max_px=4000):
+def draw_overlay(path, inserts, rows, cache, footprint, frame, boxes, loose_list, region, view, lane_boxes=(),
+                 max_px=4000):
     """灰 = CAD 线条；绿 = 计入的设备轮廓；红框 = 排除（按图层排除的不画）；橙框 = 待定；紫框 = 移动设备；
-    蓝 = 产线范围。画面范围 = 计入、移动、待定的图形"""
+    蓝粗框 = 产线范围；青色框 + 编号 = 各线体的外包矩形（基准“总长 × 总宽”）。画面范围 = 计入、移动、待定的图形"""
     if view is None:
         Image.new("RGB", (400, 200), "white").save(path); return
     m_ = 0.03 * max(view[2] - view[0], view[3] - view[1])
@@ -524,6 +566,11 @@ def draw_overlay(path, inserts, rows, cache, footprint, frame, boxes, loose_list
         p0, p1 = tx(np.array([[b[0], b[3]], [b[2], b[1]]]))
         if r["cls"] != "equipment" and i != frame and not r["reason"].startswith("图层"):
             d.rectangle([*p0, *p1], outline=CLASS_COLOURS[r["cls"]], width=2)
+    font = ImageFont.load_default(size=max(14, max_px // 80))
+    for n, b in enumerate(lane_boxes, 1):
+        p0, p1 = tx(np.array([[b[0], b[3]], [b[2], b[1]]]))
+        d.rectangle([*p0, *p1], outline=LANE_COLOUR, width=3)
+        d.text((p0[0] + 6, p0[1] + 4), f"L{n}", fill=LANE_COLOUR, font=font)
     im.save(path)
 
 

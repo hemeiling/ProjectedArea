@@ -718,10 +718,11 @@
         <span>${esc(t("drawing.lineRegion"))}: ${esc(d.line_region_basis || "—")}</span>
       </div>
       <div class="figs">${figure(d.overlay_url, t("drawing.overlayDxf"), "overlay")}</div>
-      <h3>${esc(t("drawing.lanesDxf"))}</h3>
+      <h3>${esc(t("drawing.lanes"))}</h3>
       <div class="table-wrap"><table><thead><tr><th>${esc(t("lane.lane"))}</th><th class="num">${esc(t("lane.length"))}</th>
         <th class="num">${esc(t("lane.width"))}</th><th class="num">${esc(t("lane.area"))}</th><th class="num">${esc(t("lane.footprint"))}</th></tr></thead>
         <tbody>${lanes}</tbody></table></div>
+      <p class="note">${esc(t("drawing.lanesDxf", { gap: num((d.envelope.gap_mm || 0) / 1000, 0) }))}</p>
       <h3>${esc(t("drawing.stations"))}</h3><p class="note">${esc(t("st.noneDxf"))}</p>
     </section>`;
   }

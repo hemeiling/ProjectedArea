@@ -23,6 +23,8 @@ def test_page_and_meta(client):
     assert meta["params"]["fitter_hours_per_m2"] == 0.52 and meta["params"]["electrician_hours_per_m2"] == 0.52
     assert meta["params"]["labor_area_basis"] == "baseline" and meta["labor_area_bases"] == ["baseline", "fine"]
     assert any(r["name"] == meta["params"]["route"] for r in meta["routes"])
+    js = client.get("/static/app.js")
+    assert js.status_code == 200 and js.headers["cache-control"] == "no-cache"      # 更新后不用缓存里的旧脚本
 
 
 def test_rejects_non_pdf_with_bilingual_message(client):
