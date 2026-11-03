@@ -30,7 +30,7 @@ def test_rejects_non_pdf_with_bilingual_message(client):
     r = submit_rows(client, [dict(file=0, reference_length_mm="104000")], [("103-V5.1.pdf", b"q'\x06\x98v\x14\x82I" * 100)])
     assert r.status_code == 400
     err = r.json()["error"]
-    assert err["code"] == "not_pdf" and "103-V5.1.pdf" in err["zh"] and "103-V5.1.pdf" in err["en"]
+    assert err["code"] == "unsupported_file" and "103-V5.1.pdf" in err["zh"] and "103-V5.1.pdf" in err["en"]
     assert client.get("/api/library").json() == []                       # 无效文件不进图纸库
 
 

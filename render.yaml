@@ -26,3 +26,7 @@ services:
         value: /var/data
       - key: ACCESS_PASSWORD
         sync: false
+      # DXF 测量要把整个文件读入内存，峰值约为文件大小的 7–25 倍（README 实测：110 MB → 1.1–1.4 GB，
+      # 392 MB → 9.1 GB）。2 GB 实例只接受 ≤ 100 MB 的 DXF；更大的文件用桌面版或本机网页版。
+      - key: LAYOUT_MAX_DXF_MB
+        value: "100"

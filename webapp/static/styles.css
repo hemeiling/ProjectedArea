@@ -110,6 +110,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .files td:first-child { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .files input.ref { max-width: 140px; }
 .files input.mpp { max-width: 110px; }
+.files select.unit { max-width: 200px; }
 .files .size { color: var(--ink-3); font-size: 12px; }
 
 details.params { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }

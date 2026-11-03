@@ -65,7 +65,9 @@
     ] },
   ];
 
-  // rows: [{file: File|null, sha256, known, hashing, meta, filename, size, name, ref, mpp}]
+  // rows: [{file: File|null, kind: "pdf"|"dxf", sha256, known, hashing, meta, filename, size, name, ref, mpp, unit}]
+  // 浏览器里算指纹要把整个文件读进内存；更大的文件直接上传，服务器收到时同样按内容识别同一文件
+  const HASH_MAX_BYTES = 512 * 1024 * 1024;
   const state = { lang: "zh", meta: null, system: null, rows: [], addNote: null, job: null, library: [], pollTimer: null, pollFailures: 0 };
 
   // ------------------------------------------------------------ 文字与格式
@@ -101,6 +103,19 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(locale(), { dateStyle: "short", timeStyle: "short" });
   }
   const isBlank = (v) => v === null || v === undefined || String(v).trim() === "";
+  // 文件类型：界面上按扩展名区分要填的内容（PDF 填标注尺寸，DXF 选单位）；服务器按文件内容再判断一次
+  const kindOf = (f) => (/\.dxf$/i.test(f.name) ? "dxf" : f.type === "application/pdf" || /\.pdf$/i.test(f.name) ? "pdf" : null);
+  const maxBytes = (kind) => (state.meta ? (kind === "dxf" ? state.meta.limits.max_dxf_mb : state.meta.limits.max_file_mb) : Infinity) * 1048576;
+  // DXF 单位：每个图纸单位等于多少 mm -> 显示文字
+  function unitLabel(mm) {
+    const key = Object.keys((state.meta && state.meta.dxf_units) || {}).find((k) => state.meta.dxf_units[k] === Number(mm));
+    return key ? t(`unit.${key}`) : `1 = ${mm} mm`;
+  }
+  function lengthText(mm) {
+    if (mm >= 1e6) return `${num(mm / 1e6, 1)} km`;
+    if (mm >= 1000) return `${num(mm / 1000, 1)} m`;
+    return `${num(mm, 0)} mm`;
+  }
   // 桌面版（pywebview 窗口）提供的本机接口；普通浏览器里为 null
   const desktopApi = () => (window.pywebview && window.pywebview.api) || null;
 
@@ -214,21 +229,22 @@
   // ------------------------------------------------------------ 选择文件 / 图纸库
   const maxDrawings = () => (state.meta ? state.meta.limits.max_drawings : 30);
 
-  // 一次可加入多个文件或整个文件夹；不是 PDF、重复、超出上限的文件跳过并说明
+  // 一次可加入多个文件或整个文件夹；不是 PDF/DXF、太大、重复、超出上限的文件跳过并说明
   const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
   let hashing = Promise.resolve();                 // 逐个算 SHA-256：几十个大文件同时读进内存会很慢
 
   function addFiles(fileList) {
     const files = [...fileList].sort(byName);
-    const skipped = { notPdf: 0, dup: 0, limit: 0 };
+    const skipped = { notPdf: 0, big: 0, dup: 0, limit: 0 };
     let added = 0;
     for (const f of files) {
-      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
-      if (!isPdf) { if (!/^\./.test(f.name)) skipped.notPdf++; continue; }
+      const kind = kindOf(f);
+      if (!kind) { if (!/^\./.test(f.name)) skipped.notPdf++; continue; }
+      if (f.size > maxBytes(kind)) { skipped.big++; continue; }
       if (state.rows.some((r) => r.file && r.filename === f.name && r.size === f.size && r.file.lastModified === f.lastModified)) { skipped.dup++; continue; }
       if (state.rows.length >= maxDrawings()) { skipped.limit++; continue; }
-      const row = { file: f, sha256: null, known: false, hashing: true, meta: null,
-                    filename: f.name, size: f.size, name: "", ref: "", mpp: "" };
+      const row = { file: f, kind, sha256: null, known: false, hashing: true, meta: null,
+                    filename: f.name, size: f.size, name: "", ref: "", mpp: "", unit: "" };
       state.rows.push(row);
       added++;
       hashing = hashing.then(() => identify(row));
@@ -264,6 +280,7 @@
     if (!n) { el.textContent = ""; return; }
     const parts = [t("upload.added", { n: n.added })];
     if (n.notPdf) parts.push(t("upload.skipNotPdf", { n: n.notPdf }));
+    if (n.big) parts.push(t("upload.skipBig", { n: n.big, pdf: state.meta.limits.max_file_mb, dxf: state.meta.limits.max_dxf_mb }));
     if (n.dup) parts.push(t("upload.skipDup", { n: n.dup }));
     if (n.limit) parts.push(t("upload.skipLimit", { n: n.limit, max: maxDrawings() }));
     el.textContent = parts.join(" ");
@@ -273,7 +290,7 @@
   async function identify(row) {
     try {
       if (!state.rows.includes(row)) return;       // 识别前已被移除
-      if (!(window.crypto && crypto.subtle)) return;
+      if (!(window.crypto && crypto.subtle) || row.file.size > HASH_MAX_BYTES) return;
       const digest = await crypto.subtle.digest("SHA-256", await row.file.arrayBuffer());
       row.sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
       if (state.rows.some((r) => r !== row && r.sha256 === row.sha256)) {   // 内容相同（改了名）的文件只算一次
@@ -296,13 +313,14 @@
   }
 
   function addLibraryEntries(list) {
-    const note = { added: 0, notPdf: 0, dup: 0, limit: 0 };
+    const note = { added: 0, notPdf: 0, big: 0, dup: 0, limit: 0 };
     for (const m of list) {
       if (state.rows.some((r) => r.sha256 === m.sha256)) { note.dup++; continue; }
       if (state.rows.length >= maxDrawings()) { note.limit++; continue; }
-      state.rows.push({ file: null, sha256: m.sha256, known: true, hashing: false, meta: m,
+      state.rows.push({ file: null, kind: m.kind || "pdf", sha256: m.sha256, known: true, hashing: false, meta: m,
                         filename: m.filenames[m.filenames.length - 1], size: m.size_bytes, name: m.name || "",
-                        ref: m.reference_length_mm ? String(m.reference_length_mm) : "", mpp: m.mm_per_pt ? String(m.mm_per_pt) : "" });
+                        ref: m.reference_length_mm ? String(m.reference_length_mm) : "", mpp: m.mm_per_pt ? String(m.mm_per_pt) : "",
+                        unit: "" });
       note.added++;
     }
     state.addNote = note;
@@ -314,7 +332,9 @@
     if (row.hashing) return `<span class="tag">${esc(t("row.hashing"))}</span>`;
     if (!row.known) return "";
     const m = row.meta || {};
-    const detail = t("row.knownDetail", { ref: num(m.reference_length_mm, 0), area: num(m.footprint_m2), when: when(m.last_used) });
+    const detail = row.kind === "dxf"
+      ? t("row.knownDetailDxf", { unit: m.dxf_unit_mm ? unitLabel(m.dxf_unit_mm) : t("unit.declared"), area: num(m.footprint_m2), when: when(m.last_used) })
+      : t("row.knownDetail", { ref: num(m.reference_length_mm, 0), area: num(m.footprint_m2), when: when(m.last_used) });
     return `<span class="tag ok" title="${esc(detail)}">${esc(t("row.known"))}</span> <span class="size">${esc(m.footprint_m2 ? detail : "")}</span>`;
   }
 
@@ -327,17 +347,32 @@
     $("runBtn").disabled = state.rows.length === 0 || isRunning() || state.rows.some((r) => r.hashing);
     state.rows.forEach((row, i) => {
       const tr = document.createElement("tr");
+      // PDF：标注总尺寸 + 比例；DXF：单位（文件已声明时以文件为准，未声明时才用这里的选择）
+      const inputs = row.kind === "dxf"
+        ? `<td><select class="unit" aria-label="${esc(t("col.unit"))}"><option value="">${esc(t("unit.auto"))}</option>
+            ${Object.entries(state.meta ? state.meta.dxf_units : {}).map(([k, v]) => `<option value="${v}">${esc(t(`unit.${k}`))}</option>`).join("")}
+          </select></td><td class="muted">—</td>`
+        : `<td><input type="number" class="ref" min="1" step="any" inputmode="decimal" placeholder="${esc(t("ref.placeholder"))}" aria-label="${esc(t("col.ref"))}"></td>
+          <td><input type="number" class="mpp" min="0" step="any" inputmode="decimal" placeholder="${esc(t("mpp.placeholder"))}" aria-label="${esc(t("col.mpp"))}"></td>`;
       tr.innerHTML = `
-        <td class="filecell"><span title="${esc(row.filename)}">${esc(row.filename)}</span> <span class="size">${mb(row.size)}</span><br>${rowStatus(row)}</td>
+        <td class="filecell"><span title="${esc(row.filename)}">${esc(row.filename)}</span> <span class="tag">${row.kind === "dxf" ? "DXF" : "PDF"}</span>
+          <span class="size">${mb(row.size)}</span><br>${rowStatus(row)}</td>
         <td><input type="text" class="name" maxlength="120" placeholder="${esc(t("name.placeholder"))}" aria-label="${esc(t("col.name"))}"></td>
-        <td><input type="number" class="ref" min="1" step="any" inputmode="decimal" placeholder="${esc(t("ref.placeholder"))}" aria-label="${esc(t("col.ref"))}"></td>
-        <td><input type="number" class="mpp" min="0" step="any" inputmode="decimal" placeholder="${esc(t("mpp.placeholder"))}" aria-label="${esc(t("col.mpp"))}"></td>
+        ${inputs}
         <td class="num"><button type="button" class="remove" aria-label="${esc(t("col.remove"))}">×</button></td>`;
-      const name = tr.querySelector(".name"), ref = tr.querySelector(".ref"), mpp = tr.querySelector(".mpp");
-      name.value = row.name; ref.value = row.ref; mpp.value = row.mpp;
+      const name = tr.querySelector(".name");
+      name.value = row.name;
       name.addEventListener("input", () => { row.name = name.value; });
-      ref.addEventListener("input", () => { row.ref = ref.value; ref.classList.remove("invalid"); });
-      mpp.addEventListener("input", () => { row.mpp = mpp.value; });
+      if (row.kind === "dxf") {
+        const unit = tr.querySelector(".unit");
+        unit.value = row.unit;
+        unit.addEventListener("change", () => { row.unit = unit.value; });
+      } else {
+        const ref = tr.querySelector(".ref"), mpp = tr.querySelector(".mpp");
+        ref.value = row.ref; mpp.value = row.mpp;
+        ref.addEventListener("input", () => { row.ref = ref.value; ref.classList.remove("invalid"); });
+        mpp.addEventListener("input", () => { row.mpp = mpp.value; });
+      }
       tr.querySelector(".remove").addEventListener("click", () => { state.rows.splice(i, 1); renderRows(); });
       body.appendChild(tr);
     });
@@ -355,7 +390,9 @@
     list.innerHTML = state.library.map((m, i) => `<li>
       <span class="lib-name">${esc(m.name || m.filenames[m.filenames.length - 1])}</span>
       <span class="muted">${esc(m.filenames.join("、"))} · ${mb(m.size_bytes)}</span>
-      ${m.reference_length_mm ? `<span>${num(m.reference_length_mm, 0)} mm</span>` : `<span class="tag warn">${esc(t("library.noRef"))}</span>`}
+      ${m.kind === "dxf"
+        ? `<span class="tag">DXF</span>${m.dxf_unit_mm ? `<span>${esc(unitLabel(m.dxf_unit_mm))}</span>` : ""}`
+        : m.reference_length_mm ? `<span>${num(m.reference_length_mm, 0)} mm</span>` : `<span class="tag warn">${esc(t("library.noRef"))}</span>`}
       ${m.footprint_m2 !== null ? `<span>${num(m.footprint_m2)} m²</span>` : ""}
       <span class="when">${esc(when(m.last_used || m.first_uploaded))} · ${esc(t("library.uses", { n: m.uses }))}</span>
       <button type="button" data-lib="${i}">${esc(t("library.add"))}</button></li>`).join("");
@@ -388,12 +425,14 @@
     let ok = true;
     $("fileRows").querySelectorAll("tr").forEach((tr, i) => {
       const v = state.rows[i].ref;
-      if (!isBlank(v) && !(Number(v) > 0)) { tr.querySelector(".ref").classList.add("invalid"); ok = false; }
+      if (state.rows[i].kind !== "dxf" && !isBlank(v) && !(Number(v) > 0)) { tr.querySelector(".ref").classList.add("invalid"); ok = false; }
     });
     if (!ok) { err.textContent = t("err.refInvalid"); return; }
     const rows = [], files = [];
     for (const r of state.rows) {
-      const base = { name: r.name, reference_length_mm: r.ref, mm_per_pt: r.mpp };
+      const base = r.kind === "dxf"
+        ? { name: r.name, dxf_unit_mm: r.unit }
+        : { name: r.name, reference_length_mm: r.ref, mm_per_pt: r.mpp };
       if (r.known && r.sha256) rows.push({ ...base, sha256: r.sha256 });         // 图纸库中已有：不再上传
       else { rows.push({ ...base, file: files.length }); files.push([r.file, r.filename]); }
     }
@@ -404,20 +443,23 @@
     btn.disabled = state.rows.length === 0 || isRunning();
   }
 
-  // 缺少标注总尺寸：填写后用图纸库中的同一文件重新提交（不需要再上传）
+  // 缺少标注总尺寸（PDF）或单位（DXF）：填写后用图纸库中的同一文件重新提交（不需要再上传）
   async function continueWithDimensions() {
     const job = state.job, err = $("dimError");
     err.textContent = "";
-    const values = {};
+    const values = {}, units = {};
     let ok = true;
     $("dimList").querySelectorAll("input[data-id]").forEach((input) => {
       if (!(Number(input.value) > 0)) { input.classList.add("invalid"); ok = false; } else values[input.dataset.id] = input.value;
     });
-    if (!ok) { err.textContent = t("err.refMissing"); return; }
-    const rows = job.drawings.map((d) => ({
-      sha256: d.sha256, name: d.name,
-      reference_length_mm: values[d.id] ?? d.reference_length_mm ?? "", mm_per_pt: d.mm_per_pt ?? "",
-    }));
+    $("dimList").querySelectorAll("select[data-unit-id]").forEach((sel) => {
+      if (!sel.value) { sel.classList.add("invalid"); ok = false; } else units[sel.dataset.unitId] = sel.value;
+    });
+    if (!ok) { err.textContent = t("err.inputsMissing"); return; }
+    const rows = job.drawings.map((d) => (d.kind === "dxf"
+      ? { sha256: d.sha256, name: d.name, dxf_unit_mm: units[d.id] ?? (d.unit_source === "user" ? d.dxf_unit_mm : "") }
+      : { sha256: d.sha256, name: d.name,
+          reference_length_mm: values[d.id] ?? d.reference_length_mm ?? "", mm_per_pt: d.mm_per_pt ?? "" }));
     $("dimBtn").disabled = true;
     await submit(rows, [], JSON.stringify(job.params), err);
     $("dimBtn").disabled = false;
@@ -507,7 +549,8 @@
     if (running) { renderProgress(job); return; }
 
     const failed = job.status === "failed";
-    const needsDim = failed && job.error && job.error.code === "dimension_needed" && (job.needs_dimension || []).length > 0;
+    const needsDim = failed && job.error && ["dimension_needed", "dxf_units_needed", "inputs_needed"].includes(job.error.code)
+      && (job.needs_dimension || []).length + (job.needs_units || []).length > 0;
     $("failedBox").hidden = !failed || needsDim;
     $("dimBox").hidden = !needsDim;
     $("resultBody").hidden = failed;
@@ -531,17 +574,34 @@
     renderDrawings(job);
   }
 
+  // DXF 未声明单位：列出各单位下文件头记录的图形范围有多大，帮助判断（不预选任何单位）
+  function unitPrompt(n) {
+    const ext = n.extents;
+    const options = Object.entries(state.meta.dxf_units).map(([k, v]) => `<option value="${v}">${esc(t(`unit.${k}`))}${
+      ext ? esc(t("unit.extentAs", { w: lengthText(ext[0] * v), h: lengthText(ext[1] * v) })) : ""}</option>`).join("");
+    return `<div class="dim-item">
+      <p><b>${esc(n.name)}</b> <span class="muted">${esc(n.filename)} · DXF ${esc(n.release || "")}</span></p>
+      <p class="note">${esc(ext ? t("unit.extentHint", { w: num(ext[0], 0), h: num(ext[1], 0) }) : t("unit.noExtent"))}</p>
+      <label><span>${esc(t("unit.question"))}</span>
+        <select data-unit-id="${esc(n.id)}"><option value="">${esc(t("unit.choose"))}</option>${options}</select></label>
+    </div>`;
+  }
+
   function renderDimensionPrompt(job) {
+    const dims = job.needs_dimension || [], unitNeeds = job.needs_units || [];
+    $("dimTitle").textContent = t(dims.length && unitNeeds.length ? "inputs.title" : dims.length ? "dim.title" : "unit.title");
     $("dimMsg").textContent = say(job.error);
     $("dimError").textContent = "";
     // 不放示例数字：示例值很容易被照抄（例如把 101 图的 75000 填给 102 图），而面积随它的平方变化
-    $("dimList").innerHTML = job.needs_dimension.map((n) => `<div class="dim-item">
+    $("dimList").innerHTML = dims.map((n) => `<div class="dim-item">
       <figure><img src="${esc(n.image_url)}" alt="${esc(n.name)}"><figcaption>${esc(t("dim.caption"))}
         · <a href="${esc(n.image_url)}" target="_blank" rel="noopener">${esc(t("dim.fullSize"))}</a></figcaption></figure>
       <label><span>${esc(n.name)} — ${esc(t(n.orientation === "horizontal" ? "dim.horizontal" : "dim.vertical"))}</span>
         <input type="number" min="1" step="any" inputmode="decimal" placeholder="mm" data-id="${esc(n.id)}"></label>
-    </div>`).join("") + `<p class="note crit-note">${esc(t("dim.sensitivity"))}</p>`;
+    </div>`).join("") + (dims.length ? `<p class="note crit-note">${esc(t("dim.sensitivity"))}</p>` : "")
+      + unitNeeds.map(unitPrompt).join("") + (unitNeeds.length ? `<p class="note crit-note">${esc(t("unit.sensitivity"))}</p>` : "");
     $("dimList").querySelectorAll("input").forEach((i) => i.addEventListener("input", () => i.classList.remove("invalid")));
+    $("dimList").querySelectorAll("select").forEach((s) => s.addEventListener("change", () => s.classList.remove("invalid")));
     wireLightbox($("dimList"));
   }
 
@@ -604,6 +664,7 @@
     const host = $("drawings");
     host.innerHTML = (job.results || []).map((d, i) => {
       const input = job.drawings[i] || {};
+      if (d.source === "dxf") return renderDxfDrawing(d, input);
       const scaleSrc = input.mm_per_pt ? t("drawing.scaleManual") : t("drawing.scaleAuto", { ref: num(d.reference_length_mm, 0) });
       const refSrc = input.reference_source === "library" ? t("drawing.refLibrary") : t("drawing.refUser");
       const reused = input.reused ? `<span class="tag ok">${esc(t("drawing.reused", { when: when(input.reused_from) }))}</span>` : "";
@@ -637,6 +698,32 @@
       </section>`;
     }).join("");
     wireLightbox(host);
+  }
+
+  // DXF：单位及其来源、单列的移动/待定面积；叠加图颜色与 PDF 不同（绿 = 计入）
+  function renderDxfDrawing(d, input) {
+    const reused = input.reused ? `<span class="tag ok">${esc(t("drawing.reused", { when: when(input.reused_from) }))}</span>` : "";
+    const lanes = d.envelope.lanes.map((l) => `<tr><td>${esc(l.lane)}</td><td class="num">${num(l.length_m)}</td>
+      <td class="num">${num(l.width_m)}</td><td class="num">${num(l.length_m * l.width_m)}</td><td class="num">${num(l.footprint_m2)}</td></tr>`).join("");
+    const basis = input.unit_basis && input.unit_source !== "user" ? ` · ${input.unit_basis}` : "";
+    return `<section class="drawing">
+      <h3>${esc(d.name)} <span class="muted">(${esc(d.id)}) · DXF</span> ${reused}</h3>
+      <div class="facts">
+        <span>${esc(t("drawing.footprintFixed"))}: <b>${num(d.footprint_m2)} m²</b></span>
+        <span>${esc(t("drawing.unit"))}: <b>${esc(unitLabel(d.unit_mm))}</b> (${esc(t(`unitSrc.${input.unit_source || "file"}`))}${esc(basis)})</span>
+        <span>${esc(t("drawing.mobile"))}: <b>${num(d.mobile_m2, 1)} m²</b></span>
+        <span>${esc(t("drawing.unresolved"))}: <b>${num(d.unresolved_m2, 1)} m²</b> (${esc(t("drawing.items", { n: d.n_unresolved }))})</span>
+        <span>${esc(t("drawing.inserts"))}: <b>${num(d.n_equipment, 0)}</b> / ${esc(t("drawing.excluded", { n: d.n_excluded }))}</span>
+        <span>${esc(t("drawing.groups"))}: <b>${num(d.n_groups, 0)}</b></span>
+        <span>${esc(t("drawing.lineRegion"))}: ${esc(d.line_region_basis || "—")}</span>
+      </div>
+      <div class="figs">${figure(d.overlay_url, t("drawing.overlayDxf"), "overlay")}</div>
+      <h3>${esc(t("drawing.lanesDxf"))}</h3>
+      <div class="table-wrap"><table><thead><tr><th>${esc(t("lane.lane"))}</th><th class="num">${esc(t("lane.length"))}</th>
+        <th class="num">${esc(t("lane.width"))}</th><th class="num">${esc(t("lane.area"))}</th><th class="num">${esc(t("lane.footprint"))}</th></tr></thead>
+        <tbody>${lanes}</tbody></table></div>
+      <h3>${esc(t("drawing.stations"))}</h3><p class="note">${esc(t("st.noneDxf"))}</p>
+    </section>`;
   }
 
   // ------------------------------------------------------------ 核对报告（单个 HTML 文件，发给同事核对）
@@ -675,6 +762,12 @@
       const refSrc = d.reference_source === "library" ? t("drawing.refLibrary") : t("drawing.refUser");
       const scaleSrc = d.mm_per_pt ? t("drawing.scaleManual") : t("drawing.scaleAuto", { ref: num(r.reference_length_mm, 0) });
       const measured = d.reused ? t("report.reusedFrom", { when: when(d.reused_from) }) : t("report.measuredNow");
+      if (d.kind === "dxf") {
+        return `<tr><td><b>${esc(d.name)}</b> · DXF<br><span class="muted">${esc(d.filename)} · ${mb(d.size_bytes)}</span>
+            <div class="sha">SHA-256 ${esc(d.sha256 || "—")}</div></td>
+          <td class="num">${esc(unitLabel(r.unit_mm))}<br><span class="muted">${esc(t(`unitSrc.${d.unit_source || "file"}`))}</span></td>
+          <td class="num">—</td><td>${esc(measured)}</td></tr>`;
+      }
       return `<tr><td><b>${esc(d.name)}</b><br><span class="muted">${esc(d.filename)} · ${mb(d.size_bytes)}</span>
           <div class="sha">SHA-256 ${esc(d.sha256 || "—")}</div></td>
         <td class="num">${num(r.reference_length_mm, 0)} mm<br><span class="muted">${esc(refSrc)}</span></td>

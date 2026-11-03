@@ -26,8 +26,8 @@
   <section class="card" id="uploadCard">
     <h2 data-i18n="upload.title"></h2>
     <label class="drop" id="drop">
-      <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
-      <span class="drop-icon" aria-hidden="true">PDF</span>
+      <input type="file" id="fileInput" accept="application/pdf,.pdf,.dxf" multiple hidden>
+      <span class="drop-icon" aria-hidden="true">PDF · DXF</span>
       <span data-i18n="upload.drop"></span>
     </label>
     <div class="pick-row">
@@ -50,7 +50,7 @@
         </thead>
         <tbody id="fileRows"></tbody>
       </table>
-      <p class="note"><span data-i18n="ref.hint"></span>　·　<span data-i18n="mpp.hint"></span></p>
+      <p class="note"><span data-i18n="ref.hint"></span>　·　<span data-i18n="mpp.hint"></span>　·　<span data-i18n="unit.hint"></span></p>
       <div class="pick-row">
         <span class="note" id="rowCount"></span>
         <button type="button" class="link" id="clearBtn" data-i18n="upload.clear"></button>
@@ -96,7 +96,7 @@
     <p class="error" id="reportError" role="alert"></p>
 
     <div id="dimBox" class="alert alert-amber" hidden>
-      <strong data-i18n="dim.title"></strong>
+      <strong id="dimTitle"></strong>
       <p id="dimMsg"></p>
       <div class="dim-list" id="dimList"></div>
       <div class="actions">

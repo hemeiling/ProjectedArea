@@ -4,16 +4,19 @@
     python run_web.py                                   # 本机：http://127.0.0.1:8100
     uvicorn --factory webapp.app:create_app             # 部署（只能 1 个 worker：任务状态在进程内）
 
-前端只负责上传与展示；比例尺、面积、工时、箱数、运费全部由后端（与命令行同一份代码）计算。
-上传的 PDF 只保存在服务器私有目录（图纸库），任何接口都不返回其路径或原文件。
+前端只负责上传与展示；比例尺、单位、面积、工时、箱数、运费全部由后端（与命令行同一份代码）计算。
+上传的 PDF / DXF 只保存在服务器私有目录（图纸库），任何接口都不返回其路径或原文件。
 
 环境变量
-    LAYOUT_DATA_DIR   数据目录（图纸库、缓存、任务），默认 ./data；部署时应指向持久磁盘
-    ACCESS_PASSWORD   设置后整个网站需要密码（浏览器弹窗登录，用户名任意）；/api/health 除外
+    LAYOUT_DATA_DIR    数据目录（图纸库、缓存、任务），默认 ./data；部署时应指向持久磁盘
+    ACCESS_PASSWORD    设置后整个网站需要密码（浏览器弹窗登录，用户名任意）；/api/health 除外
+    LAYOUT_MAX_DXF_MB  单个 DXF 的上限，默认 2048 MB。测量时内存峰值约为文件大小的 7–25 倍
+                       （README 中 4 张样例图实测），服务器内存小时应调低
 """
 import base64
 import binascii
 import datetime as dt
+import hashlib
 import json
 import os
 import secrets
@@ -25,14 +28,17 @@ from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from webapp import dxfinfo
 from webapp import jobs as J
 from webapp.library import Library
 from webapp.messages import msg
 import estimate
 
 MAX_DRAWINGS = 30
-MAX_FILE_MB = 100
-MAX_UPLOAD_MB = 400          # 一次上传的总量：上传内容先全部读入内存再校验
+MAX_FILE_MB = 100            # 单个 PDF
+MAX_DXF_MB = int(os.environ.get("LAYOUT_MAX_DXF_MB", 2048))
+MAX_UPLOAD_MB = 4096         # 一次上传的总量：边收边写入磁盘（不占内存），上限只为保护磁盘
+UPLOAD_CHUNK = 1024 * 1024
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 WORKBOOK_NAME = "投影面积与装柜估算"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -65,17 +71,45 @@ def _optional_positive(value, code, fname, upper=None):
     return v
 
 
-async def _read_limited(upload, max_mb):
-    """读上传文件；超过上限返回 None（不把超大文件整个读进内存）"""
-    chunks, size, limit = [], 0, max_mb * 1024 * 1024
-    while True:
-        chunk = await upload.read(1024 * 1024)
-        if not chunk:
-            return b"".join(chunks)
-        size += len(chunk)
-        if size > limit:
-            return None
-        chunks.append(chunk)
+def _dxf_unit(value, fname):
+    """DXF 单位（每个图纸单位等于多少 mm）：空 -> None；否则必须是界面给出的选项之一"""
+    if value is None or str(value).strip() == "":
+        return None
+    v = _positive(value)
+    if v is None or v not in dxfinfo.UNIT_CHOICES_MM.values():
+        raise ApiError(400, msg("bad_dxf_unit", file=fname))
+    return v
+
+
+async def _stage_upload(upload, lib, fname):
+    """边收边写入图纸库目录并计算 SHA-256，不把文件读进内存；按文件开头的内容判断类型（不看扩展名），
+    并按类型检查大小上限。返回 dict(path, sha256, size, kind)；出错时删除临时文件。"""
+    tmp, h, size, kind, limit = lib.staging_path(), hashlib.sha256(), 0, None, None
+    try:
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = await upload.read(UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                if kind is None:
+                    kind = dxfinfo.sniff(chunk)
+                    if kind == dxfinfo.DWG:
+                        raise ApiError(400, msg("dwg_not_supported", file=fname))
+                    if kind is None:
+                        raise ApiError(400, msg("unsupported_file", file=fname))
+                    limit = MAX_DXF_MB if kind == dxfinfo.DXF else MAX_FILE_MB
+                size += len(chunk)
+                if size > limit * 1024 * 1024:
+                    raise ApiError(413, msg("file_too_large", file=fname, max_mb=limit))
+                h.update(chunk)
+                f.write(chunk)
+        if kind is None:                                   # 空文件
+            raise ApiError(400, msg("unsupported_file", file=fname))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    return dict(path=tmp, sha256=h.hexdigest(), size=size, kind=kind)
 
 
 def _job_view(job):
@@ -93,8 +127,8 @@ def _job_view(job):
 
 
 def _library_view(m):
-    keep = ("sha256", "name", "filenames", "size_bytes", "first_uploaded", "last_used", "reference_length_mm",
-            "mm_per_pt", "reference_source", "footprint_m2", "uses")
+    keep = ("sha256", "kind", "name", "filenames", "size_bytes", "first_uploaded", "last_used", "reference_length_mm",
+            "mm_per_pt", "reference_source", "dxf_unit_mm", "unit_source", "footprint_m2", "uses")
     return dict({k: m.get(k) for k in keep}, last_job=(m.get("jobs") or [None])[-1])
 
 
@@ -117,7 +151,7 @@ def _storage(data_dir):
         for root, _, names in os.walk(os.path.join(data_dir, part)):
             for n in names:
                 total += os.path.getsize(os.path.join(root, n))
-                files += n.endswith(".pdf") and part == "library"
+                files += n.endswith((".pdf", ".dxf")) and part == "library"
         out[part] = round(total / 1048576, 1)
         if part == "library":
             out["library_files"] = files
@@ -180,7 +214,8 @@ def create_app(data_dir=None, desktop=False):
                     labor_area_bases=list(estimate.LABOR_AREA_BASES),
                     routes=[dict(name=k, usd_per_40ft=v) for k, v in fr["rates_usd_per_40ft"].items()],
                     rates_source=fr["rates_source"], container=cfg["packing"]["container"],
-                    limits=dict(max_drawings=MAX_DRAWINGS, max_file_mb=MAX_FILE_MB))
+                    limits=dict(max_drawings=MAX_DRAWINGS, max_file_mb=MAX_FILE_MB, max_dxf_mb=MAX_DXF_MB),
+                    dxf_units=dxfinfo.UNIT_CHOICES_MM)
 
     @app.get("/api/system")
     def system():
@@ -209,8 +244,9 @@ def create_app(data_dir=None, desktop=False):
     @app.post("/api/jobs", status_code=202)
     async def create_job(rows: str = Form(""), files: Optional[List[UploadFile]] = File(None),
                          params: str = Form("{}")):
-        """rows：JSON 列表，每张图纸一项 {file: 上传文件序号 | sha256: 图纸库中的文件, name, reference_length_mm, mm_per_pt}；
-        标注总尺寸可留空（沿用该文件上次的值，或在任务中请用户填写）。"""
+        """rows：JSON 列表，每张图纸一项 {file: 上传文件序号 | sha256: 图纸库中的文件, name,
+        reference_length_mm, mm_per_pt（PDF）, dxf_unit_mm（DXF，只在文件未声明单位时使用）}；
+        标注总尺寸、单位可留空（沿用该文件上次的值，或在任务中请用户填写）。"""
         try:
             rows = json.loads(rows or "[]")
             if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
@@ -227,45 +263,48 @@ def create_app(data_dir=None, desktop=False):
         except (ValueError, TypeError, AttributeError) as e:
             raise ApiError(400, msg("bad_params", detail=str(e)))
 
-        uploads, total_mb = [], 0.0                       # 先全部校验，再存入图纸库
-        for i, f in enumerate(files):
-            fname = os.path.basename(f.filename or f"drawing{i + 1}.pdf")[:200]
-            data = await _read_limited(f, MAX_FILE_MB)
-            if data is None:
-                raise ApiError(413, msg("file_too_large", file=fname, max_mb=MAX_FILE_MB))
-            total_mb += len(data) / 1048576
-            if total_mb > MAX_UPLOAD_MB:
-                raise ApiError(413, msg("upload_too_large", max_mb=MAX_UPLOAD_MB))
-            if b"%PDF-" not in data[:1024]:
-                raise ApiError(400, msg("not_pdf", file=fname))
-            uploads.append((fname, data))
+        uploads, total = [], 0                            # 先全部收下并校验，再放入图纸库
+        try:
+            for i, f in enumerate(files):
+                fname = os.path.basename(f.filename or f"drawing{i + 1}")[:200]
+                uploads.append(dict(await _stage_upload(f, lib, fname), filename=fname))
+                total += uploads[-1]["size"]
+                if total > MAX_UPLOAD_MB * 1024 * 1024:
+                    raise ApiError(413, msg("upload_too_large", max_mb=MAX_UPLOAD_MB))
 
-        out = []
-        for r in rows:
-            fi = r.get("file")
-            if fi is not None:
-                if not isinstance(fi, int) or isinstance(fi, bool) or not 0 <= fi < len(uploads):
-                    raise ApiError(400, msg("bad_rows"))
-                fname, data = uploads[fi]
-                meta, size = None, len(data)
-            else:
-                meta = lib.get(str(r.get("sha256") or ""))
-                if not meta:
-                    raise ApiError(400, msg("library_missing"))
-                fname, size = meta["filenames"][-1], meta["size_bytes"]
-            ref = _optional_positive(r.get("reference_length_mm"), "bad_reference_length", fname, upper=1e7)
-            mpp = _optional_positive(r.get("mm_per_pt"), "bad_mm_per_pt", fname)
-            out.append(dict(file=fi, meta=meta, filename=fname, size_bytes=size, ref=ref, mpp=mpp,
-                            name=str(r.get("name") or "").strip()[:120]))
-        job_rows = []
-        for r in out:
-            if r["file"] is not None:
-                sha, _ = lib.add(uploads[r["file"]][1], r["filename"])
-                r["meta"] = lib.get(sha)
-            sha = r["meta"]["sha256"]
-            job_rows.append(dict(sha256=sha, filename=r["filename"], size_bytes=r["size_bytes"],
-                                 name=r["name"] or r["meta"].get("name") or "",
-                                 reference_length_mm=r["ref"], mm_per_pt=r["mpp"]))
+            out = []
+            for r in rows:
+                fi = r.get("file")
+                if fi is not None:
+                    if not isinstance(fi, int) or isinstance(fi, bool) or not 0 <= fi < len(uploads):
+                        raise ApiError(400, msg("bad_rows"))
+                    up = uploads[fi]
+                    meta, fname, size, kind = None, up["filename"], up["size"], up["kind"]
+                else:
+                    meta = lib.get(str(r.get("sha256") or ""))
+                    if not meta:
+                        raise ApiError(400, msg("library_missing"))
+                    fname, size, kind = meta["filenames"][-1], meta["size_bytes"], meta["kind"]
+                pdf = kind == dxfinfo.PDF
+                ref = _optional_positive(r.get("reference_length_mm"), "bad_reference_length", fname, upper=1e7) if pdf else None
+                mpp = _optional_positive(r.get("mm_per_pt"), "bad_mm_per_pt", fname) if pdf else None
+                unit = None if pdf else _dxf_unit(r.get("dxf_unit_mm"), fname)
+                out.append(dict(file=fi, meta=meta, filename=fname, size_bytes=size, kind=kind, ref=ref, mpp=mpp,
+                                unit=unit, name=str(r.get("name") or "").strip()[:120]))
+            job_rows = []
+            for r in out:
+                if r["file"] is not None:
+                    up = uploads[r["file"]]
+                    if not up.get("sha"):                  # 同一上传文件被多行引用时只放入一次
+                        up["sha"], _ = lib.adopt(up["path"], up["sha256"], up["size"], up["kind"], up["filename"])
+                    r["meta"] = lib.get(up["sha"])
+                job_rows.append(dict(sha256=r["meta"]["sha256"], kind=r["kind"], filename=r["filename"],
+                                     size_bytes=r["size_bytes"], name=r["name"] or r["meta"].get("name") or "",
+                                     reference_length_mm=r["ref"], mm_per_pt=r["mpp"], dxf_unit_mm=r["unit"]))
+        finally:
+            for up in uploads:                             # 出错时、或没有被任何一行用到的上传文件
+                if not up.get("sha") and os.path.exists(up["path"]):
+                    os.remove(up["path"])
         job = J.new_job(store, job_rows, p)
         worker.submit(job["id"])
         return dict(job_id=job["id"])

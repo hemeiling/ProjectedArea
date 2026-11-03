@@ -158,7 +158,7 @@ LABOR_AREA = f"IF({P['basis']}=\"{BASIS_LABEL['fine']}\",{{c}}{{R[fine]}},{{c}}{
 lines = [
     # (key, label, formula-template using {c} {id} {R[key]}, fmt, note, sum?, highlight)
     ("id", "图纸编号", "{id_lit}", "@", "", False, False),
-    ("scale", "比例尺 (mm / PDF点)", "{mmpt}", "0.00", "自动识别：图上最长尺寸线 = 标注总尺寸", False, False),
+    ("scale", "比例尺 (mm / PDF点) 或 DXF 单位", "{mmpt}", "0.00", "PDF：图上最长尺寸线 = 标注总尺寸；DXF：文件声明的单位或核对过的单位", False, False),
     ("stations", "识别到的工位数", "=COUNTIF('工位明细'!$A$5:$A${st_last},{c}5)", "0", "OCR 识别 OP 编号；见『工位明细』", True, False),
     ("base", "① 基准面积：产线总长×宽 (m²)", "=SUMIF('线体基准（总长×宽）'!$A$5:$A${ln_last},{c}5,'线体基准（总长×宽）'!$E$5:$E${ln_last})", "#,##0", "工时表“公摊&投影面积”的现行口径", True, True),
     # 未识别到工位（如未安装 OCR）时，取整图投影面积（与各工位之和是同一口径，只是不分工位）
@@ -186,7 +186,8 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
     sm.cell(rr, 1, lab).font = BOLD if hi else F()
     for j, d in enumerate(D):
         c = CL(2 + j)
-        v = f.format(c=c, R=R, id_lit=d["id"], mmpt=d["mm_per_pt"], st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
+        mmpt = f"DXF：1 单位 = {d['unit_mm']:g} mm" if d.get("source") == "dxf" else d["mm_per_pt"]
+        v = f.format(c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
         if v.replace(".", "").isdigit():
             v = float(v) if "." in v else v
         cell = put(sm, f"{c}{rr}", v, fmt, BOLD if hi else F(), KEY if hi else None)
@@ -216,6 +217,8 @@ steps = [
     ("   公摊工时：钳工、电工各算一次“所选口径面积 × 系数”，相加；口径（基准/精细）是业务决定，在『参数』页选择。", False),
     ("9. 装柜与运费：精细面积 × 包装系数 ÷（40HQ 地板面积 × 利用率）→ 箱数；箱数 × 单箱费用 → 运费。", False),
     ("已知局限：工位分界按标签中点划分，边界处相邻工位间会有少量面积互相归属；浅灰色设备可能填充不全；PDF 无设备高度与重量。", False),
+    ("DXF 图纸（dxf_footprint.py）：单位取自文件 $INSUNITS 或核对过的记录；每个图块插入在自身坐标里求一次外轮廓，"
+     "按平移/旋转/镜像/缩放放到图上后取并集；移动设备与待定项单列、不计入；基准为全部设备的整体外包矩形（未按线体分开）。", False),
     ("最佳长期方案：CAD 直接导出 DXF，每台设备为独立图块（Block）并带名称，可精确到单台设备，无需图像识别。", False),
 ]
 for i, (t, b) in enumerate(steps, 1):
