@@ -11,7 +11,8 @@ import math
 
 # 网页可修改的参数：key -> (config.yaml 中的位置, 最小值, 最大值)；route 单独校验
 PARAMS = {
-    "shared_hours_per_m2": (("labor", "shared_hours_per_m2"), 0.0, 100.0),
+    "fitter_hours_per_m2": (("labor", "fitter_hours_per_m2"), 0.0, 100.0),
+    "electrician_hours_per_m2": (("labor", "electrician_hours_per_m2"), 0.0, 100.0),
     "packaging_factor": (("packing", "packaging_factor"), 0.5, 5.0),
     "floor_utilisation_low": (("packing", "floor_utilisation", "low"), 0.05, 1.0),
     "floor_utilisation_high": (("packing", "floor_utilisation", "high"), 0.05, 1.0),
@@ -22,6 +23,8 @@ PARAMS = {
     "local_charges_usd_per_box": (("freight", "local_charges_usd_per_box"), 0.0, 1e6),
     "insurance_pct_of_freight": (("freight", "insurance_pct_of_freight"), 0.0, 1.0),
 }
+# 公摊工时按哪种面积计算（业务决定，图纸不决定）：基准 = 产线总长×宽，精细 = 各工位投影面积之和
+LABOR_AREA_BASES = ("baseline", "fine")
 
 
 def _get(cfg, path):
@@ -39,6 +42,7 @@ def _set(cfg, path, value):
 def read_params(cfg):
     """config.yaml -> 网页参数（扁平字典）"""
     p = {k: _get(cfg, path) for k, (path, _, _) in PARAMS.items()}
+    p["labor_area_basis"] = cfg["labor"]["area_basis"]
     p["route"] = cfg["freight"]["route"]
     return p
 
@@ -56,6 +60,10 @@ def validate_params(raw, cfg):
         if not (lo <= v <= hi) or math.isnan(v):
             raise ValueError(f"参数 {k} 超出范围 {lo}–{hi} / Parameter {k} out of range {lo}–{hi}")
         p[k] = v
+    if raw.get("labor_area_basis"):
+        if raw["labor_area_basis"] not in LABOR_AREA_BASES:
+            raise ValueError(f"未知面积口径 {raw['labor_area_basis']} / Unknown area basis {raw['labor_area_basis']}")
+        p["labor_area_basis"] = raw["labor_area_basis"]
     if raw.get("route"):
         if raw["route"] not in cfg["freight"]["rates_usd_per_40ft"]:
             raise ValueError(f"未知航线 {raw['route']} / Unknown route {raw['route']}")
@@ -72,6 +80,7 @@ def apply_params(cfg, p):
     out = copy.deepcopy(cfg)
     for k, (path, _, _) in PARAMS.items():
         _set(out, path, p[k])
+    out["labor"]["area_basis"] = p["labor_area_basis"]
     out["freight"]["route"] = p["route"]
     return out
 
@@ -94,6 +103,9 @@ def summarize(drawing, p, cfg):
     baseline = sum(l_["length_m"] * l_["width_m"] for l_ in lanes)
     # ② 精细：各工位面积之和；未识别到工位时取整图投影面积（同一口径）
     fine = sum(s["footprint_m2"] for s in stations) if stations else drawing["footprint_m2"]
+    # ③ 公摊工时：工时表里钳工、电工各有一行“面积 × 系数”，按所选面积口径计算
+    rf, re_ = p["fitter_hours_per_m2"], p["electrician_hours_per_m2"]
+    labor_area = baseline if p["labor_area_basis"] == "baseline" else fine
     c = cfg["packing"]["container"]
     floor = c["inner_length_m"] * c["inner_width_m"]
     ulo, uhi = p["floor_utilisation_low"], p["floor_utilisation_high"]
@@ -114,8 +126,13 @@ def summarize(drawing, p, cfg):
         baseline_m2=baseline,
         fine_m2=fine,
         fine_vs_baseline=fine / baseline if baseline else None,
-        hours_baseline=baseline * p["shared_hours_per_m2"],
-        hours_fine=fine * p["shared_hours_per_m2"],
+        labor_area_basis=p["labor_area_basis"],
+        labor_area_m2=labor_area,
+        labor_hours_baseline=baseline * (rf + re_),
+        labor_hours_fine=fine * (rf + re_),
+        labor_hours_fitter=labor_area * rf,
+        labor_hours_electrician=labor_area * re_,
+        labor_hours=labor_area * (rf + re_),
         packed_m2=packed,
         boxes_low=boxes_low, boxes_mid=boxes_mid, boxes_high=boxes_high,
         frame_boxes_mid=frame_mid,
@@ -127,7 +144,9 @@ def summarize(drawing, p, cfg):
     )
 
 
-SUMMED = ("station_count", "baseline_m2", "fine_m2", "hours_baseline", "hours_fine", "packed_m2",
+SUMMED = ("station_count", "baseline_m2", "fine_m2", "labor_area_m2",
+          "labor_hours_baseline", "labor_hours_fine", "labor_hours_fitter", "labor_hours_electrician", "labor_hours",
+          "packed_m2",
           "boxes_low", "boxes_mid", "boxes_high", "frame_boxes_mid",
           "freight_low_usd", "freight_mid_usd", "freight_high_usd")
 

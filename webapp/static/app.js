@@ -4,18 +4,26 @@
 
   const $ = (id) => document.getElementById(id);
   const PARAM_KEYS = [
-    "shared_hours_per_m2", "packaging_factor",
+    "labor_area_basis", "fitter_hours_per_m2", "electrician_hours_per_m2", "packaging_factor",
     "floor_utilisation_low", "floor_utilisation_high",
     "footprint_uncertainty_low", "footprint_uncertainty_high",
     "oversize_share", "flat_rack_multiplier", "local_charges_usd_per_box", "insurance_pct_of_freight",
     "route",
   ];
-  // 汇总表行：[key, 格式, 是否关键行, 合计列是否显示]
+  // 旧任务保存的参数里只有一个公摊工时系数（报告中照原样显示）
+  const LEGACY_PARAM_KEYS = ["shared_hours_per_m2"];
+  // 汇总表行：[key, 格式, 是否关键行, 合计列是否显示]；结果里没有的行不显示
   const SUMMARY_ROWS = [
     ["station_count", "int", false, true],
     ["baseline_m2", "area", true, true],
     ["fine_m2", "area", true, true],
     ["fine_vs_baseline", "pct", false, true],
+    ["labor_hours_baseline", "hours", false, true],
+    ["labor_hours_fine", "hours", false, true],
+    ["labor_hours_fitter", "hours", false, true],
+    ["labor_hours_electrician", "hours", false, true],
+    ["labor_hours", "hours", true, true],
+    // 旧任务（公摊工时只按一个系数算）
     ["hours_baseline", "hours", false, true],
     ["hours_fine", "hours", true, true],
     ["packed_m2", "area", false, true],
@@ -167,6 +175,15 @@
           input.appendChild(o);
         }
         input.value = v.route;
+      } else if (key === "labor_area_basis") {
+        input = document.createElement("select");
+        for (const b of state.meta.labor_area_bases) {
+          const o = document.createElement("option");
+          o.value = b;
+          o.textContent = t(`basis.${b}`);
+          input.appendChild(o);
+        }
+        input.value = v.labor_area_basis;
       } else {
         input = document.createElement("input");
         input.type = "number"; input.step = "any"; input.min = "0"; input.inputMode = "decimal";
@@ -188,6 +205,7 @@
     const res = await fetch("/api/meta");
     state.meta = await res.json();
     $("laborSource").textContent = state.meta.labor_source || "—";
+    $("laborBasisSource").textContent = state.meta.labor_area_basis_source || "—";
     $("ratesSource").textContent = state.meta.rates_source || "—";
     buildParamGrid($("paramGrid"), null);
     renderOcrPill();
@@ -540,7 +558,11 @@
       kpi(t("kpi.fine"), `${num(tot.fine_m2, 1)} <small>m²</small>`, fromFootprint ? t("fine.fromFootprint") : t("kpi.fineNote"), true),
       kpi(t("kpi.baseline"), `${num(tot.baseline_m2, 1)} <small>m²</small>`, t("kpi.baselineNote")),
       kpi(t("kpi.ratio"), pct(tot.fine_vs_baseline), t("kpi.ratioNote")),
-      kpi(t("kpi.hours"), `${num(tot.hours_fine, 0)} <small>h</small>`, t("kpi.hoursNote", { r: p.shared_hours_per_m2 }), true),
+      tot.labor_hours === undefined
+        ? kpi(t("kpi.hoursLegacy"), `${num(tot.hours_fine, 0)} <small>h</small>`, t("kpi.hoursLegacyNote", { r: p.shared_hours_per_m2 }), true)
+        : kpi(t("kpi.hours", { basis: t(`basis.${p.labor_area_basis}`) }), `${num(tot.labor_hours, 0)} <small>h</small>`,
+          t("kpi.hoursNote", { f: num(tot.labor_hours_fitter, 0), e: num(tot.labor_hours_electrician, 0),
+            rf: p.fitter_hours_per_m2, re: p.electrician_hours_per_m2 }), true),
       kpi(t("kpi.boxes"), num(tot.boxes_mid, 0), t("kpi.boxesNote", { lo: tot.boxes_low, hi: tot.boxes_high, f: tot.frame_boxes_mid })),
       kpi(t("kpi.freight"), usd(tot.freight_mid_usd), t("kpi.freightNote", { route: e.route, rate: usd(rate) })),
     ].join("");
@@ -553,7 +575,10 @@
     if (cols.length > 1) html += `<th class="num">${esc(t("summary.total"))}</th>`;
     html += "</tr></thead><tbody>";
     for (const [key, kind, isKey, hasTotal] of SUMMARY_ROWS) {
-      html += `<tr class="${isKey ? "key" : ""}"><td>${esc(t(`row.${key}`))}</td>`;
+      if (!cols.some((c) => key in c)) continue;
+      const label = key === "labor_hours"
+        ? t("row.labor_hours", { basis: t(`basis.${job.estimate.params.labor_area_basis}`) }) : t(`row.${key}`);
+      html += `<tr class="${isKey ? "key" : ""}"><td>${esc(label)}</td>`;
       for (const c of cols) {
         const src = key === "fine_m2" && c.fine_source === "footprint" ? `<span class="src">${esc(t("fine.fromFootprint"))}</span>` : "";
         html += `<td class="num">${fmt(c[key], kind)}${src}</td>`;
@@ -663,8 +688,9 @@
 
   function reportParams(job) {
     const p = job.estimate.params;
-    return `<div class="table-wrap"><table class="kv"><tbody>${PARAM_KEYS.map((k) =>
-      `<tr><td>${esc(t(`params.${k}`))}</td><td>${esc(p[k])}</td></tr>`).join("")}</tbody></table></div>`;
+    const value = (k) => (k === "labor_area_basis" ? t(`basis.${p[k]}`) : p[k]);
+    return `<div class="table-wrap"><table class="kv"><tbody>${[...PARAM_KEYS, ...LEGACY_PARAM_KEYS].filter((k) => k in p).map((k) =>
+      `<tr><td>${esc(t(`params.${k}`))}</td><td>${esc(value(k))}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
   async function buildReportHtml(job) {

@@ -27,6 +27,8 @@ HDR_F, HDR = F(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F2D44"
 YEL, KEY, GREY = PatternFill("solid", fgColor="FFFF00"), PatternFill("solid", fgColor="FBE5D6"), PatternFill("solid", fgColor="F2F2F2")
 th = Side(style="thin", color="BFBFBF"); BOX = Border(top=th, bottom=th, left=th, right=th)
 NOTE = F(color="595959", size=9)
+# config.yaml 的 labor.area_basis -> 工作簿『参数』页下拉框中的文字
+BASIS_LABEL = {"baseline": "基准", "fine": "精细"}
 
 
 def header(ws, row, labels, col0=1):
@@ -53,7 +55,9 @@ P = {}
 pk, fr, lb = cfg["packing"], cfg["freight"], cfg["labor"]
 rows = [
     ("工时", None, None, None),
-    ("ratio_h", "公摊工时系数（工时 / m²）", lb["shared_hours_per_m2"], "0.00", lb.get("source", ""), True),
+    ("ratio_f", "钳工 公摊工时系数（工时 / m²）", lb["fitter_hours_per_m2"], "0.00", lb.get("source", ""), True),
+    ("ratio_e", "电工 公摊工时系数（工时 / m²）", lb["electrician_hours_per_m2"], "0.00", "工时表中钳工、电工各算一次“面积 × 系数”", True),
+    ("basis", "公摊工时面积口径", BASIS_LABEL[lb["area_basis"]], "@", "下拉选择：" + lb.get("area_basis_source", ""), True),
     ("装箱", None, None, None),
     ("pack", "包装系数（包装后面积 / 投影面积）", pk["packaging_factor"], "0.00", "木箱每边约 +100 mm、加底托。建议用历史装柜数据反推", True),
     ("cL", f"{pk['container']['name']} 内长 (m)", pk["container"]["inner_length_m"], "0.00", "40HQ 标准内尺寸 12.03 × 2.35 × 2.69 m，限重约 26.5 t", False),
@@ -95,11 +99,14 @@ pa[f"B{rate_row}"] = f"=INDEX($B${rt0}:$B${rt1},MATCH({P['route'].replace('参�
 pa[f"B{rate_row}"].number_format = "$#,##0"; pa[f"B{rate_row}"].border = BOX; pa[f"B{rate_row}"].font = F()
 dv = DataValidation(type="list", formula1=f"=$A${rt0}:$A${rt1}"); pa.add_data_validation(dv)
 dv.add(P["route"].replace("参数!", "").replace("$", ""))
+dvb = DataValidation(type="list", formula1='"' + ",".join(BASIS_LABEL.values()) + '"'); pa.add_data_validation(dvb)
+dvb.add(P["basis"].replace("参数!", "").replace("$", ""))
+RATIO = f"({P['ratio_f']}+{P['ratio_e']})"   # 钳工 + 电工
 
 # ===================================================== 工位明细
 st = wb.create_sheet("工位明细", 0)
 cols = ["图纸", "工位编号", "工位名称", "实际投影面积 (m²)", "工位外包 长 (m)", "工位外包 宽 (m)",
-        "工位外包面积 (m²)", "投影/外包", "公摊工时 (h)", "OCR 原文", "编号为推断"]
+        "工位外包面积 (m²)", "投影/外包", "公摊工时 钳工+电工 (h)", "OCR 原文", "编号为推断"]
 widths = [10, 10, 34, 16, 13, 13, 15, 11, 13, 46, 11]
 st["A1"] = "各工位实际占地（投影）面积 —— 由图纸自动识别"; st["A1"].font = F(bold=True, size=13)
 st["A2"] = "实际投影面积 = 工位区段内设备轮廓所围面积（不含通道/空地）；工位外包面积 = 该工位设备的外包矩形，供对比。"; st["A2"].font = NOTE
@@ -113,7 +120,7 @@ for d in D:
             if i >= 4: c.number_format = "#,##0.0"
         put(st, f"G{r}", f"=E{r}*F{r}", "#,##0.0")
         put(st, f"H{r}", f"=IF(G{r}=0,\"-\",D{r}/G{r})", "0%")
-        put(st, f"I{r}", f"=D{r}*{P['ratio_h']}", "#,##0")
+        put(st, f"I{r}", f"=D{r}*{RATIO}", "#,##0")
         put(st, f"J{r}", s["ocr_text"], None, NOTE)
         put(st, f"K{r}", "是" if s["op_inferred"] else "", None, F(color="C00000") if s["op_inferred"] else F())
         r += 1
@@ -123,7 +130,7 @@ st.freeze_panes = "D5"; st.auto_filter.ref = f"A4:K{st_last}"
 
 # ===================================================== 线体基准
 ln = wb.create_sheet("线体基准（总长×宽）", 1)
-ln["A1"] = "基准算法：产线总长 × 总宽（保留原粗算口径，作为对比）"; ln["A1"].font = F(bold=True, size=13)
+ln["A1"] = "基准算法：产线总长 × 总宽（工时表“公摊&投影面积”的现行口径）"; ln["A1"].font = F(bold=True, size=13)
 ln["A2"] = "每条线体取设备外包矩形；一张图有多条并行线体时分别计算后相加（不含线体之间的通道）。"; ln["A2"].font = NOTE
 header(ln, 4, ["图纸", "线体", "总长 (m)", "总宽 (m)", "总长×宽 (m²)", "该线体实际投影面积 (m²)", "投影/外包"])
 r = 5
@@ -142,48 +149,55 @@ sm.column_dimensions["A"].width = 44
 for i in range(N + 1): sm.column_dimensions[CL(2 + i)].width = 20
 sm.column_dimensions[CL(N + 3)].width = 60
 sm["A1"] = "投影面积 · 公摊工时 · 装柜与运费估算"; sm["A1"].font = F(bold=True, size=14)
-sm["A2"] = "两种面积口径并列：基准（产线总长×宽）与精细（各工位实际投影面积相加）。参数在『参数』页修改。"; sm["A2"].font = NOTE
+sm["A2"] = "两种面积口径并列：基准（产线总长×宽，工时表现行口径）与精细（各工位实际投影面积相加）。参数与公摊工时口径在『参数』页修改。"; sm["A2"].font = NOTE
 header(sm, 4, ["项目"] + [d["name"] for d in D] + ["合计", "计算方法"])
 sm.row_dimensions[4].height = 32
 TOT = CL(N + 2); NC = CL(N + 3)
+# 公摊工时所用面积：按『参数』页选择的口径取基准或精细
+LABOR_AREA = f"IF({P['basis']}=\"{BASIS_LABEL['fine']}\",{{c}}{{R[fine]}},{{c}}{{R[base]}})"
 lines = [
-    # (label, formula-template using {c} {id}, fmt, note, sum?, highlight)
-    ("图纸编号", "{id_lit}", "@", "", False, False),
-    ("比例尺 (mm / PDF点)", "{mmpt}", "0.00", "自动识别：图上最长尺寸线 = 标注总尺寸", False, False),
-    ("识别到的工位数", "=COUNTIF('工位明细'!$A$5:$A${st_last},{c}5)", "0", "OCR 识别 OP 编号；见『工位明细』", True, False),
-    ("① 基准面积：产线总长×宽 (m²)", "=SUMIF('线体基准（总长×宽）'!$A$5:$A${ln_last},{c}5,'线体基准（总长×宽）'!$E$5:$E${ln_last})", "#,##0", "原粗算口径（保留作对比）", True, True),
+    # (key, label, formula-template using {c} {id} {R[key]}, fmt, note, sum?, highlight)
+    ("id", "图纸编号", "{id_lit}", "@", "", False, False),
+    ("scale", "比例尺 (mm / PDF点)", "{mmpt}", "0.00", "自动识别：图上最长尺寸线 = 标注总尺寸", False, False),
+    ("stations", "识别到的工位数", "=COUNTIF('工位明细'!$A$5:$A${st_last},{c}5)", "0", "OCR 识别 OP 编号；见『工位明细』", True, False),
+    ("base", "① 基准面积：产线总长×宽 (m²)", "=SUMIF('线体基准（总长×宽）'!$A$5:$A${ln_last},{c}5,'线体基准（总长×宽）'!$E$5:$E${ln_last})", "#,##0", "工时表“公摊&投影面积”的现行口径", True, True),
     # 未识别到工位（如未安装 OCR）时，取整图投影面积（与各工位之和是同一口径，只是不分工位）
-    ("② 精细面积：各工位投影面积之和 (m²)", "=IF(COUNTIF('工位明细'!$A$5:$A${st_last},{c}5)=0,{fp},SUMIF('工位明细'!$A$5:$A${st_last},{c}5,'工位明细'!$D$5:$D${st_last}))", "#,##0", "新算法：只计设备轮廓内面积；未识别到工位时取整图投影面积", True, True),
-    ("精细 / 基准", "=IF({c}8=0,\"-\",{c}9/{c}8)", "0%", "产线中空地、通道占比越大，此值越小", False, False),
-    ("公摊工时 – 按基准面积 (h)", f"={{c}}8*{P['ratio_h']}", "#,##0", "面积 × 公摊工时系数", True, False),
-    ("公摊工时 – 按精细面积 (h)", f"={{c}}9*{P['ratio_h']}", "#,##0", "", True, True),
-    ("装柜：包装后面积 (m²)", f"={{c}}9*{P['pack']}", "#,##0", "精细面积 × 包装系数", True, False),
-    ("40HQ 箱数 – 低", f"=ROUNDUP({{c}}9*{P['flo']}*{P['pack']}/({P['cL']}*{P['cW']}*{P['uhi']}),0)", "0", "面积下限 + 乐观利用率", True, False),
-    ("40HQ 箱数 – 中", f"=ROUNDUP({{c}}13/({P['cL']}*{P['cW']}*AVERAGE({P['ulo']},{P['uhi']})),0)", "0", "", True, True),
-    ("40HQ 箱数 – 高", f"=ROUNDUP({{c}}9*{P['fhi']}*{P['pack']}/({P['cL']}*{P['cW']}*{P['ulo']}),0)", "0", "面积上限 + 保守利用率", True, False),
-    ("   其中框架箱/开顶箱（中）", f"=ROUND({{c}}15*{P['os']},0)", "0", "", True, False),
-    ("单箱费用 – 40HQ (US$)", f"={P['rate']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "海运价 + 保险 + 杂费", False, False),
-    ("单箱费用 – 框架箱 (US$)", f"={P['rate']}*{P['frm']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "", False, False),
-    ("运费 – 低 (US$)", "={c}14*((1-" + P["os"] + ")*{c}18+" + P["os"] + "*{c}19)", "$#,##0", "", True, False),
-    ("运费 – 中 (US$)", "=({c}15-{c}17)*{c}18+{c}17*{c}19", "$#,##0", "", True, True),
-    ("运费 – 高 (US$)", "={c}16*((1-" + P["os"] + ")*{c}18+" + P["os"] + "*{c}19)", "$#,##0", "", True, False),
+    ("fine", "② 精细面积：各工位投影面积之和 (m²)", "=IF(COUNTIF('工位明细'!$A$5:$A${st_last},{c}5)=0,{fp},SUMIF('工位明细'!$A$5:$A${st_last},{c}5,'工位明细'!$D$5:$D${st_last}))", "#,##0", "新算法：只计设备轮廓内面积；未识别到工位时取整图投影面积", True, True),
+    ("ratio", "精细 / 基准", "=IF({c}{R[base]}=0,\"-\",{c}{R[fine]}/{c}{R[base]})", "0%", "产线中空地、通道占比越大，此值越小", False, False),
+    ("h_base", "公摊工时 – 按基准面积，钳工+电工 (h)", f"={{c}}{{R[base]}}*{RATIO}", "#,##0", "面积 × (钳工系数 + 电工系数)", True, False),
+    ("h_fine", "公摊工时 – 按精细面积，钳工+电工 (h)", f"={{c}}{{R[fine]}}*{RATIO}", "#,##0", "", True, False),
+    ("h_fit", "钳工 公摊工时 – 所选口径 (h)", f"={LABOR_AREA}*{P['ratio_f']}", "#,##0", "口径在『参数』页选择", True, False),
+    ("h_ele", "电工 公摊工时 – 所选口径 (h)", f"={LABOR_AREA}*{P['ratio_e']}", "#,##0", "", True, False),
+    ("h_tot", "公摊工时合计 – 所选口径 (h)", "={c}{R[h_fit]}+{c}{R[h_ele]}", "#,##0", "工时，不是费用", True, True),
+    ("packed", "装柜：包装后面积 (m²)", f"={{c}}{{R[fine]}}*{P['pack']}", "#,##0", "精细面积 × 包装系数", True, False),
+    ("bx_lo", "40HQ 箱数 – 低", f"=ROUNDUP({{c}}{{R[fine]}}*{P['flo']}*{P['pack']}/({P['cL']}*{P['cW']}*{P['uhi']}),0)", "0", "面积下限 + 乐观利用率", True, False),
+    ("bx_mid", "40HQ 箱数 – 中", f"=ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*AVERAGE({P['ulo']},{P['uhi']})),0)", "0", "", True, True),
+    ("bx_hi", "40HQ 箱数 – 高", f"=ROUNDUP({{c}}{{R[fine]}}*{P['fhi']}*{P['pack']}/({P['cL']}*{P['cW']}*{P['ulo']}),0)", "0", "面积上限 + 保守利用率", True, False),
+    ("frame", "   其中框架箱/开顶箱（中）", f"=ROUND({{c}}{{R[bx_mid]}}*{P['os']},0)", "0", "", True, False),
+    ("c_box", "单箱费用 – 40HQ (US$)", f"={P['rate']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "海运价 + 保险 + 杂费", False, False),
+    ("c_frm", "单箱费用 – 框架箱 (US$)", f"={P['rate']}*{P['frm']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "", False, False),
+    ("fr_lo", "运费 – 低 (US$)", "={c}{R[bx_lo]}*((1-" + P["os"] + ")*{c}{R[c_box]}+" + P["os"] + "*{c}{R[c_frm]})", "$#,##0", "", True, False),
+    ("fr_mid", "运费 – 中 (US$)", "=({c}{R[bx_mid]}-{c}{R[frame]})*{c}{R[c_box]}+{c}{R[frame]}*{c}{R[c_frm]}", "$#,##0", "", True, True),
+    ("fr_hi", "运费 – 高 (US$)", "={c}{R[bx_hi]}*((1-" + P["os"] + ")*{c}{R[c_box]}+" + P["os"] + "*{c}{R[c_frm]})", "$#,##0", "", True, False),
 ]
-for i, (lab, f, fmt, note, summ, hi) in enumerate(lines):
-    rr = 5 + i
+R = {line[0]: 5 + i for i, line in enumerate(lines)}
+for (key, lab, f, fmt, note, summ, hi) in lines:
+    rr = R[key]
     sm.cell(rr, 1, lab).font = BOLD if hi else F()
     for j, d in enumerate(D):
         c = CL(2 + j)
-        v = f.format(c=c, id_lit=d["id"], mmpt=d["mm_per_pt"], st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
+        v = f.format(c=c, R=R, id_lit=d["id"], mmpt=d["mm_per_pt"], st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
         if v.replace(".", "").isdigit():
             v = float(v) if "." in v else v
         cell = put(sm, f"{c}{rr}", v, fmt, BOLD if hi else F(), KEY if hi else None)
     if summ:
         put(sm, f"{TOT}{rr}", f"=SUM(B{rr}:{CL(N + 1)}{rr})", fmt, BOLD if hi else F(), KEY if hi else None)
-    elif rr == 10:
-        put(sm, f"{TOT}{rr}", f"=IF({TOT}8=0,\"-\",{TOT}9/{TOT}8)", fmt)
+    elif key == "ratio":
+        put(sm, f"{TOT}{rr}", f"=IF({TOT}{R['base']}=0,\"-\",{TOT}{R['fine']}/{TOT}{R['base']})", fmt)
     sm.cell(rr, N + 3, note).font = NOTE
-sm["A25"] = "说明：蓝字 = 输入/自动测量值；黄底 = 需校准的关键假设；橙底 = 关键结果。面积为规划级估算（约 ±10–15%），箱数与运费为 ±25%。"; sm["A25"].font = NOTE
-sm["A26"] = "未包含：设备重量校核（PDF 无重量）、目的地内陆运输、关税、滞箱费。"; sm["A26"].font = NOTE
+nr = 5 + len(lines) + 2
+sm[f"A{nr}"] = "说明：蓝字 = 输入/自动测量值；黄底 = 需校准的关键假设；橙底 = 关键结果。面积为规划级估算（约 ±10–15%），箱数与运费为 ±25%。"; sm[f"A{nr}"].font = NOTE
+sm[f"A{nr + 1}"] = "未包含：设备重量校核（PDF 无重量）、目的地内陆运输、关税、滞箱费。"; sm[f"A{nr + 1}"].font = NOTE
 sm.freeze_panes = "B5"
 
 # ===================================================== 方法说明 + 图
@@ -198,7 +212,8 @@ steps = [
     ("5. 面积：剩余设备线条栅格化 → 闭合 <150 mm 缝隙 → 填充 <20 m² 的封闭区（设备内部）→ 去除宽度 <250 mm 的细线 → 统计像素面积 = 实际投影面积。", False),
     ("6. 工位：黑色文字聚类成标签块，逐块 OCR（Tesseract）读出 OP 编号与名称；编号按同列连续性纠错/补全；名称可在配置中人工修正。", False),
     ("7. 分摊：每块设备面积归属横向最近的标签列；同列相邻标签中点为工位分界 → 各工位面积；所有工位相加 = 精细面积。", False),
-    ("8. 基准：每条线体（被贯通填充带隔开）取设备外包矩形 总长×总宽，相加 = 原粗算口径，保留对比。", False),
+    ("8. 基准：每条线体（被贯通填充带隔开）取设备外包矩形 总长×总宽，相加 = 工时表“公摊&投影面积”的现行口径。", False),
+    ("   公摊工时：钳工、电工各算一次“所选口径面积 × 系数”，相加；口径（基准/精细）是业务决定，在『参数』页选择。", False),
     ("9. 装柜与运费：精细面积 × 包装系数 ÷（40HQ 地板面积 × 利用率）→ 箱数；箱数 × 单箱费用 → 运费。", False),
     ("已知局限：工位分界按标签中点划分，边界处相邻工位间会有少量面积互相归属；浅灰色设备可能填充不全；PDF 无设备高度与重量。", False),
     ("最佳长期方案：CAD 直接导出 DXF，每台设备为独立图块（Block）并带名称，可精确到单台设备，无需图像识别。", False),

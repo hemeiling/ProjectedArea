@@ -20,7 +20,8 @@ def test_page_and_meta(client):
     assert "产线布局投影面积估算" in client.get("/").text
     meta = client.get("/api/meta").json()
     assert meta["ocr_available"] is False
-    assert meta["params"]["shared_hours_per_m2"] == 0.52
+    assert meta["params"]["fitter_hours_per_m2"] == 0.52 and meta["params"]["electrician_hours_per_m2"] == 0.52
+    assert meta["params"]["labor_area_basis"] == "baseline" and meta["labor_area_bases"] == ["baseline", "fine"]
     assert any(r["name"] == meta["params"]["route"] for r in meta["routes"])
 
 
@@ -77,7 +78,8 @@ def test_end_to_end(client, layout_pdf, tmp_path):
 
     e = job["estimate"]["drawings"][0]
     assert e["fine_source"] == "footprint" and e["fine_m2"] == d["footprint_m2"]
-    assert e["hours_fine"] == pytest.approx(d["footprint_m2"] * 0.52)
+    assert e["labor_hours_fine"] == pytest.approx(d["footprint_m2"] * (0.52 + 0.52))
+    assert e["labor_area_basis"] == "baseline" and e["labor_hours"] == pytest.approx(e["labor_hours_baseline"])
     assert str(tmp_path) not in json.dumps(job, ensure_ascii=False)                       # 不暴露服务器路径
 
     img = client.get(d["overlay_url"])
@@ -90,7 +92,7 @@ def test_end_to_end(client, layout_pdf, tmp_path):
     assert wb.sheetnames == ["汇总", "工位明细", "线体基准（总长×宽）", "参数", "方法说明"]
     fine_formula = wb["汇总"]["B9"].value
     assert fine_formula.startswith("=IF(COUNTIF(") and str(d["footprint_m2"]) in fine_formula   # 无工位时取整图面积
-    assert wb["参数"]["B4"].value == 0.52                                                   # 工时系数来自 config
+    assert (wb["参数"]["B4"].value, wb["参数"]["B5"].value, wb["参数"]["B6"].value) == (0.52, 0.52, "基准")   # 来自 config
 
     listed = client.get("/api/jobs").json()
     assert listed[0]["id"] == job["id"] and listed[0]["fine_m2"] == pytest.approx(d["footprint_m2"])
@@ -99,13 +101,16 @@ def test_end_to_end(client, layout_pdf, tmp_path):
 def test_recalculate_rebuilds_workbook_without_remeasuring(client, layout_pdf):
     job = wait_for(client, submit(client, [layout_pdf], [REFERENCE_MM]).json()["job_id"])
     area = job["results"][0]["footprint_m2"]
-    r = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"shared_hours_per_m2": 1.0, "route": "上海 → 纽约"}})
+    r = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {
+        "fitter_hours_per_m2": 1.0, "electrician_hours_per_m2": 0.5, "labor_area_basis": "fine", "route": "上海 → 纽约"}})
     assert r.status_code == 200
     e = r.json()["estimate"]["drawings"][0]
-    assert e["hours_fine"] == pytest.approx(area) and e["rate_usd_per_40ft"] == 9726
+    assert e["labor_hours_fitter"] == pytest.approx(area) and e["labor_hours_electrician"] == pytest.approx(area * 0.5)
+    assert e["rate_usd_per_40ft"] == 9726
     assert r.json()["results"][0]["footprint_m2"] == area
     wb = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))
-    assert wb["参数"]["B4"].value == 1.0 and wb["参数"]["B15"].value == "上海 → 纽约"
+    assert (wb["参数"]["B4"].value, wb["参数"]["B5"].value, wb["参数"]["B6"].value) == (1.0, 0.5, "精细")
+    assert wb["参数"]["B17"].value == "上海 → 纽约"
 
     bad = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"oversize_share": 5}})
     assert bad.status_code == 400 and bad.json()["error"]["code"] == "bad_params"

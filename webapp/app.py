@@ -176,6 +176,8 @@ def create_app(data_dir=None, desktop=False):
         fr = cfg["freight"]
         return dict(ocr_available=J.ocr_available(), params=estimate.read_params(cfg),
                     labor_source=cfg["labor"].get("source", ""),
+                    labor_area_basis_source=cfg["labor"].get("area_basis_source", ""),
+                    labor_area_bases=list(estimate.LABOR_AREA_BASES),
                     routes=[dict(name=k, usd_per_40ft=v) for k, v in fr["rates_usd_per_40ft"].items()],
                     rates_source=fr["rates_source"], container=cfg["packing"]["container"],
                     limits=dict(max_drawings=MAX_DRAWINGS, max_file_mb=MAX_FILE_MB))
