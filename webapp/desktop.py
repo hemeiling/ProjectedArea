@@ -152,6 +152,37 @@ class DesktopApi:
         return dict(ok=True)
 
 
+# ------------------------------------------------------------ macOS 文件选择框
+_PickerDelegate = None                   # Objective-C 类只能定义一次
+
+
+def fix_mac_file_picker():
+    """pywebview（macOS）为 <input type="file"> 打开的选择框总是“只能选文件”，界面的“选择文件夹…”选不了文件夹。
+    改为：页面要求选文件夹（webkitdirectory）时打开文件夹选择框，WebKit 再把文件夹里的文件交给页面。
+    文件类型过滤照旧（pywebview 只认 accept 里的 MIME 类型）。替换失败时保留 pywebview 原来的做法。"""
+    global _PickerDelegate
+    if sys.platform != "darwin" or _PickerDelegate is not None:
+        return
+    try:
+        import Foundation
+        from webview import FileDialog
+        from webview.platforms.cocoa import BrowserView
+
+        # 子类重写（而不是直接替换方法）：PyObjC 从父类继承完成回调（block）的签名
+        class LayoutEstimatorBrowserDelegate(BrowserView.BrowserDelegate):
+            def webView_runOpenPanelWithParameters_initiatedByFrame_completionHandler_(
+                    self, webview, param, frame, handler):
+                i = BrowserView.get_instance("webview", webview) or list(BrowserView.instances.values())[0]
+                kind = FileDialog.FOLDER if param.allowsDirectories() else FileDialog.OPEN
+                paths = i.create_file_dialog(kind, "", param.allowsMultipleSelection(), "",
+                                             param._acceptedMIMETypes(), main_thread=True)
+                handler([Foundation.NSURL.fileURLWithPath_(p) for p in paths] if paths else None)
+
+        BrowserView.BrowserDelegate = _PickerDelegate = LayoutEstimatorBrowserDelegate   # 之后创建的窗口都用它
+    except Exception:  # noqa: BLE001 — pywebview 内部结构变了：照常运行，只是不能选文件夹
+        log.warning("could not adjust the macOS file picker", exc_info=True)
+
+
 def _busy(base_url):
     """是否有任务在排队或计算中"""
     import json
@@ -173,6 +204,7 @@ def run(data_dir=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         handlers=[logging.FileHandler(os.path.join(data_dir, "desktop.log"), encoding="utf-8")])
 
+    fix_mac_file_picker()
     lock = acquire_lock(data_dir)
     if lock is None:                       # 已经开着：再开一个窗口连到同一个服务
         url = running_url(data_dir)

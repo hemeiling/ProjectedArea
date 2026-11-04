@@ -31,6 +31,13 @@ def test_page_and_meta(client):
     assert doc.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+def test_file_picker_filters_by_extension_only():
+    # macOS 桌面版（pywebview）只按 accept 里的 MIME 类型过滤：写了 application/pdf，选择框里 DXF 就是灰的
+    html = open(os.path.join(ROOT, "webapp", "static", "index.html"), encoding="utf-8").read()
+    accept = re.search(r'id="fileInput"[^>]*accept="([^"]*)"', html).group(1)
+    assert set(accept.split(",")) == {".pdf", ".dxf"}
+
+
 def test_rejects_non_pdf_with_bilingual_message(client):
     # 加密软件处理过的文件：开头是随机字节，没有 %PDF
     r = submit_rows(client, [dict(file=0, reference_length_mm="104000")], [("103-V5.1.pdf", b"q'\x06\x98v\x14\x82I" * 100)])

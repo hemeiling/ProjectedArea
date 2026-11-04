@@ -28,7 +28,8 @@
   <section class="card" id="uploadCard">
     <h2 data-i18n="upload.title"></h2>
     <label class="drop" id="drop">
-      <input type="file" id="fileInput" accept="application/pdf,.pdf,.dxf" multiple hidden>
+      <!-- accept 只写扩展名：macOS 桌面版（pywebview）只按 MIME 类型过滤，写了 application/pdf 就选不了 DXF -->
+      <input type="file" id="fileInput" accept=".pdf,.dxf" multiple hidden>
       <span class="drop-icon" aria-hidden="true">PDF · DXF</span>
       <span data-i18n="upload.drop"></span>
     </label>
