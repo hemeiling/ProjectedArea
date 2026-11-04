@@ -4,8 +4,9 @@
     python desktop.py --smoke-test          # 从源代码
     LayoutEstimator --smoke-test            # 打包后的程序（CI 用来检查安装包能真正算出面积）
 
-在临时目录中：生成一张已知面积的合成矢量图纸 → 启动本机服务 → 上传并估算 → 检查面积、Excel、页面。
-测量和生成工作簿都走子进程，所以也检查了打包后 “程序 --run-script” 的调用方式。不需要窗口。
+在临时目录中：生成已知面积的合成 PDF 和 DXF 图纸 → 启动本机服务 → 一次上传两张并估算 → 检查面积、Excel、页面。
+测量和生成工作簿都走子进程，所以也检查了打包后 “程序 --run-script” 的调用方式。
+不打开窗口，但会加载窗口所需的库（macOS：Cocoa/WebKit；Windows：WinForms + WebView2），确认已打包。
 """
 import json
 import os
@@ -17,6 +18,7 @@ import time
 import urllib.request
 import uuid
 
+import ezdxf
 import pymupdf
 
 # 合成图纸：100 mm/pt。尺寸线 600 pt = 60000 mm；厂房边界 600 × 400 pt；三台设备（纯描边矩形）
@@ -29,6 +31,11 @@ EQUIPMENT = [  # (x0, y0, x1, y1) pt，面积 = 宽 × 高 × 0.01 m²/pt²
 ]
 EQUIPMENT_M2 = 35.0
 TOLERANCE = 1.07            # 栅格边缘约半个像素：小设备面积偏大几个百分点
+
+# 合成 DXF（文件声明 mm）：同一 2 × 1 m 设备图块插入三次，其中一台旋转 90°
+DXF_MACHINE_MM = (2000.0, 1000.0)
+DXF_EQUIPMENT_M2 = 6.0
+DXF_TOLERANCE = 0.02        # 相对误差：轮廓按 DXF 方法栅格化后的边缘误差
 
 
 def make_layout_pdf(path, with_dimension=True):
@@ -50,16 +57,34 @@ def make_layout_pdf(path, with_dimension=True):
     return path
 
 
-def _post_job(url, pdf_path):
+def make_layout_dxf(path):
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4                                          # 毫米
+    w, h = DXF_MACHINE_MM
+    blk = doc.blocks.new("MACHINE")
+    blk.add_lwpolyline([(0, 0), (w, 0), (w, h), (0, h)], close=True)
+    blk.add_circle((w / 2, h / 2), 200)
+    for k in range(1, 6):                                                # 内部细节线（只有外框的图形按待定处理）
+        blk.add_line((w * k / 6, h * 0.2), (w * k / 6, h * 0.8))
+    msp = doc.modelspace()
+    for x, rotation in ((0, 0), (5000, 90), (10000, 0)):
+        msp.add_blockref("MACHINE", (x, 0), dxfattribs=dict(rotation=rotation))
+    msp.dxf.extmin, msp.dxf.extmax = (-1000, 0, 0), (12000, 2000, 0)     # 保存时写入文件头 $EXTMIN/$EXTMAX
+    doc.saveas(path)
+    return path
+
+
+def _post_job(url, uploads):
+    """uploads: [(文件名, 路径, 内容类型, 该行参数)]，一个任务提交多张图纸"""
     boundary = uuid.uuid4().hex
-    rows = json.dumps([dict(file=0, name="smoke", reference_length_mm=str(REFERENCE_MM), mm_per_pt="")])
-    with open(pdf_path, "rb") as f:
-        pdf = f.read()
-    body = b"".join([
-        f'--{boundary}\r\nContent-Disposition: form-data; name="rows"\r\n\r\n{rows}\r\n'.encode(),
-        f'--{boundary}\r\nContent-Disposition: form-data; name="params"\r\n\r\n{{}}\r\n'.encode(),
-        f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="smoke.pdf"\r\n'
-        f'Content-Type: application/pdf\r\n\r\n'.encode(), pdf, f"\r\n--{boundary}--\r\n".encode()])
+    rows = json.dumps([dict(file=i, **row) for i, (_, _, _, row) in enumerate(uploads)])
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="rows"\r\n\r\n{rows}\r\n'.encode(),
+             f'--{boundary}\r\nContent-Disposition: form-data; name="params"\r\n\r\n{{}}\r\n'.encode()]
+    for name, path, content_type, _ in uploads:
+        with open(path, "rb") as f:
+            parts += [f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{name}"\r\n'
+                      f'Content-Type: {content_type}\r\n\r\n'.encode(), f.read(), b"\r\n"]
+    body = b"".join(parts + [f"--{boundary}--\r\n".encode()])
     req = urllib.request.Request(url + "/api/jobs", data=body, method="POST",
                                  headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -86,17 +111,36 @@ def _tesseract_version(base_dir):
     return out[0] if r.returncode == 0 and out else None
 
 
+def _window_toolkit():
+    """加载原生窗口所用的库（不打开窗口）：返回渲染引擎名，失败时返回 'error: …'"""
+    try:
+        if sys.platform == "darwin":
+            from webview.platforms import cocoa as toolkit
+        elif sys.platform == "win32":
+            from webview.platforms import winforms as toolkit          # 同时加载 WebView2 程序集
+        else:
+            return "skipped"
+    except Exception as e:  # noqa: BLE001 — 任何导入失败都说明安装包缺文件
+        return f"error: {type(e).__name__}: {e}"
+    return getattr(toolkit, "renderer", None) or "ok"
+
+
 def main(timeout_s=600):
     from webapp import jobs as J
     from webapp.desktop import start_server
 
     tmp = tempfile.mkdtemp(prefix="layout-smoke-")
     report = dict(frozen=bool(getattr(sys, "frozen", False)), ocr_available=J.ocr_available(),
-                  tesseract=_tesseract_version(J.ESTIMATOR_DIR))
+                  tesseract=_tesseract_version(J.ESTIMATOR_DIR), window_toolkit=_window_toolkit())
     try:
         server, url = start_server(os.path.join(tmp, "data"))
         report["page_ok"] = b"<html" in _get(url + "/").lower()
-        jid = _post_job(url, make_layout_pdf(os.path.join(tmp, "smoke.pdf")))
+        jid = _post_job(url, [
+            ("smoke.pdf", make_layout_pdf(os.path.join(tmp, "smoke.pdf")), "application/pdf",
+             dict(name="smoke", reference_length_mm=str(REFERENCE_MM), mm_per_pt="")),
+            ("smoke.dxf", make_layout_dxf(os.path.join(tmp, "smoke.dxf")), "application/octet-stream",
+             dict(name="smoke-dxf")),
+        ])
         deadline = time.monotonic() + timeout_s
         while True:
             job = json.loads(_get(f"{url}/api/jobs/{jid}"))
@@ -105,9 +149,12 @@ def main(timeout_s=600):
             time.sleep(0.5)
         report["status"] = job["status"]
         if job["status"] == "done":
-            area = job["results"][0]["footprint_m2"]
+            by_name = {r["name"]: r for r in job["results"]}
+            area, dxf_area = by_name["smoke"]["footprint_m2"], by_name["smoke-dxf"]["footprint_m2"]
             report.update(footprint_m2=area, expected_m2=EQUIPMENT_M2,
                           area_ok=EQUIPMENT_M2 <= area <= EQUIPMENT_M2 * TOLERANCE,
+                          dxf_footprint_m2=dxf_area, dxf_expected_m2=DXF_EQUIPMENT_M2,
+                          dxf_area_ok=abs(dxf_area / DXF_EQUIPMENT_M2 - 1) <= DXF_TOLERANCE,
                           workbook_ok=_get(url + job["workbook_url"])[:2] == b"PK")
         else:
             report["error"] = job.get("error")
@@ -115,7 +162,8 @@ def main(timeout_s=600):
     finally:
         J.stop_children()
         shutil.rmtree(tmp, ignore_errors=True)
-    ok = report.get("page_ok") and report.get("area_ok") and report.get("workbook_ok")
+    ok = (report.get("page_ok") and report.get("area_ok") and report.get("dxf_area_ok") and report.get("workbook_ok")
+          and not report["window_toolkit"].startswith("error"))
     if os.environ.get("SMOKE_EXPECT_OCR"):              # 附带了 Tesseract 的安装包：必须能找到并运行
         ok = ok and bool(report["tesseract"])
     report["ok"] = bool(ok)

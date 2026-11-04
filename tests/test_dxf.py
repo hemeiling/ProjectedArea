@@ -230,3 +230,12 @@ def test_measure_splits_two_rows_of_machines_into_two_lines(tmp_path, conf):
     assert [(l_["length_m"], l_["width_m"]) for l_ in lanes] == [(14.0, 1.0), (14.0, 1.0)]
     assert r["envelope"]["area_m2"] == pytest.approx(28.0, abs=0.5)
     assert sum(l_["footprint_m2"] for l_ in lanes) == pytest.approx(r["footprint_m2"], abs=0.2)
+
+
+def test_installer_self_test_dxf_has_its_known_area(tmp_path, conf):
+    """安装包自检（webapp/smoke.py）用的合成 DXF：面积必须是已知值，自检才有意义"""
+    from webapp.smoke import DXF_EQUIPMENT_M2, DXF_TOLERANCE, make_layout_dxf
+    path = make_layout_dxf(str(tmp_path / "smoke.dxf"))
+    r = D.measure(dict(id="s", name="s", dxf=path), conf, str(tmp_path / "out"))
+    assert r["footprint_m2"] == pytest.approx(DXF_EQUIPMENT_M2, rel=DXF_TOLERANCE)
+    assert sum(x["cls"] == "equipment" for x in r["inserts"]) == 3 and r["transform_check_failures"] == []

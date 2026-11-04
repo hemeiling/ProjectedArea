@@ -76,12 +76,12 @@ data/jobs/<id>/                     每次估算：config.yaml（可用命令行
 
 | | |
 |---|---|
-| 获取安装包 | GitHub → Actions → **desktop-app** → Run workflow，完成后在该次运行的 Artifacts 下载 `LayoutEstimator-Windows.zip` / `LayoutEstimator-macOS.zip`（推送 `v*` 标签时同时发布到 Releases） |
-| Windows | 解压后双击文件夹里的 `LayoutEstimator.exe`（整个文件夹一起保留）。未签名：首次运行如出现 SmartScreen，点“更多信息 → 仍要运行”。需要 WebView2（Win10/11 已自带） |
-| macOS | 解压后把 `LayoutEstimator.app` 拖到“应用程序”。未签名：首次右键 → 打开（或“系统设置 → 隐私与安全性 → 仍要打开”）。Apple 芯片 |
+| 获取安装包 | GitHub → Actions → **desktop-app** → Run workflow（选分支），完成后在该次运行页面底部的 Artifacts 下载 `LayoutEstimator-<版本>-Windows` / `-macOS`（GitHub 会再套一层 zip）。推送 `v<版本>` 标签时同时发布到 Releases。版本号见 `VERSION` |
+| Windows 10/11 | 双击 `LayoutEstimator-<版本>-Windows-Setup.exe`，按当前用户安装，**不需要管理员权限**（程序在 `%LOCALAPPDATA%\Programs\LayoutEstimator`），开始菜单出现“产线投影面积估算”，可在“设置 → 应用”中卸载。未签名：如出现 SmartScreen，点“更多信息 → 仍要运行”；公司电脑如被安全策略拦截需找 IT 放行。需要 Edge WebView2（Win11 自带，Win10 一般已有；没有时安装结束会提示下载地址） |
+| macOS | 打开 `LayoutEstimator-<版本>-macOS.dmg`，把 `LayoutEstimator` 拖到“应用程序”。未签名：从网上下载的首次打开会被拦，点“完成”后到“系统设置 → 隐私与安全性”点“仍要打开”（DMG 里附有说明）。Apple 芯片 |
 | 工位识别 | Windows 安装包自带 Tesseract；macOS 如已安装 Tesseract（Homebrew 等）会自动找到，否则只算整图面积 |
-| 数据 | macOS `~/Library/Application Support/LayoutEstimator`，Windows `%LOCALAPPDATA%\LayoutEstimator`（界面“工作流程与费用”中可直接打开）；只在本机，结果用 Excel / HTML 报告分享 |
-| 自检 | `LayoutEstimator --smoke-test`：用合成图纸跑一遍测量与工作簿，检查面积 |
+| 数据 | macOS `~/Library/Application Support/LayoutEstimator`，Windows `%LOCALAPPDATA%\LayoutEstimator`（界面“工作流程与费用”中可直接打开）；只在本机，卸载程序不删除，结果用 Excel / HTML 报告分享 |
+| 自检 | `LayoutEstimator --smoke-test`：用合成 PDF 和 DXF 跑一遍测量与工作簿，检查面积，并加载窗口组件（CI 用安装后的程序运行） |
 
 本机打包与开发：
 
@@ -89,7 +89,10 @@ data/jobs/<id>/                     每次估算：config.yaml（可用命令行
 .venv/bin/pip install -r requirements-desktop.txt
 .venv/bin/python desktop.py                                  # 从源代码打开桌面版
 .venv/bin/python -m PyInstaller --noconfirm desktop.spec     # 打包到 dist/（在哪个系统上打包就得到哪个系统的程序）
+installer/make_dmg.sh dist/LayoutEstimator.app dist/LayoutEstimator-$(cat VERSION)-macOS.dmg   # macOS 安装盘
 ```
+
+Windows 安装包用 Inno Setup 6 生成（`installer/LayoutEstimator.iss`，命令见文件开头）；Windows 程序只能在 Windows 上打包，平时由 CI 完成。
 
 ### 部署到 Render（可选：需要多人共用一个网址和同一个图纸库时）
 

@@ -3,8 +3,8 @@
 #     .venv/bin/pip install -r requirements-desktop.txt
 #     .venv/bin/python -m PyInstaller --noconfirm desktop.spec
 #
-# 输出：dist/LayoutEstimator/LayoutEstimator.exe（Windows，整个文件夹一起分发）
-#       dist/LayoutEstimator.app（macOS）
+# 输出：dist/LayoutEstimator/LayoutEstimator.exe（Windows，再用 installer/LayoutEstimator.iss 做成安装包）
+#       dist/LayoutEstimator.app（macOS，再用 installer/make_dmg.sh 做成 DMG）
 # 用“文件夹”模式而不是单文件：估算以子进程运行程序自身，单文件模式每次都要先解压几百 MB。
 # 如有 vendor/tesseract/（CI 在 Windows 上放入 Tesseract），一并打包，工位识别无需另装。
 import os
@@ -14,6 +14,8 @@ from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = os.path.abspath(SPECPATH)
 NAME = "LayoutEstimator"
+with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as f:   # 安装包版本号：唯一来源
+    VERSION = f.read().strip()
 
 datas = [(os.path.join(ROOT, f), ".") for f in
          ("estimate_footprint.py", "stations.py", "dxf_footprint.py", "build_workbook.py", "estimate.py", "config.yaml")]
@@ -35,5 +37,6 @@ coll = COLLECT(exe, a.binaries, a.datas, name=NAME)
 
 if sys.platform == "darwin":
     app = BUNDLE(coll, name=f"{NAME}.app", bundle_identifier="local.layout-estimator",
-                 info_plist={"CFBundleDisplayName": "产线投影面积估算", "CFBundleShortVersionString": "1.0",
+                 info_plist={"CFBundleDisplayName": "产线投影面积估算", "CFBundleShortVersionString": VERSION,
+                             "CFBundleVersion": VERSION,
                              "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0"})

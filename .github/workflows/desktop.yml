@@ -1,5 +1,9 @@
-# 桌面版安装包：在 GitHub 的 Windows / macOS 机器上分别打包、自检，产物在本次运行的 Artifacts 中下载。
-# 手动运行：Actions → desktop-app → Run workflow；推送 v* 标签时同时发布到 Releases。
+# 桌面版安装包：在 GitHub 的 Windows / macOS 机器上分别打包 → 做成安装包 → 安装 → 用安装好的程序自检。
+#   Windows：LayoutEstimator-<版本>-Windows-Setup.exe（按用户安装，不需要管理员权限）
+#   macOS  ：LayoutEstimator-<版本>-macOS.dmg（Apple 芯片）
+# 版本号取自仓库根目录 VERSION。
+# 手动运行：Actions → desktop-app → Run workflow（可选分支），安装包在该次运行页面底部的 Artifacts 中下载；
+# 推送 v<版本> 标签时同时发布到 Releases（标签必须与 VERSION 一致）。
 name: desktop-app
 
 on:
@@ -15,17 +19,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            zip: LayoutEstimator-Windows.zip
-          - os: macos-14          # Apple 芯片
-            zip: LayoutEstimator-macOS.zip
+        os: [windows-latest, macos-14]     # macos-14 = Apple 芯片
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Version
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $v"; exit 1
+          fi
+
       - run: pip install -r requirements-desktop.txt
 
       # Windows：附带 Tesseract（UB Mannheim 版，含英文语言包），同事无需另装即可识别工位
@@ -41,30 +53,50 @@ jobs:
       - run: python -m pytest -q
       - run: python -m PyInstaller --noconfirm desktop.spec
 
-      # 自检：用打包好的程序算一张合成图纸（经过子进程测量、生成 Excel），面积必须正确
-      - name: Self-test (Windows)
+      # ---------- Windows：Inno Setup 安装包 → 静默安装 → 用安装好的程序自检
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$env:VERSION" "/DSourceDir=$pwd\dist\LayoutEstimator" "/O$pwd\dist" installer\LayoutEstimator.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "PACKAGE=dist/LayoutEstimator-$env:VERSION-Windows-Setup.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Install and self-test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           SMOKE_EXPECT_OCR: "1"
         run: |
-          $p = Start-Process -FilePath dist\LayoutEstimator\LayoutEstimator.exe -ArgumentList "--smoke-test" `
+          $dir = "$env:RUNNER_TEMP\LayoutEstimator"
+          $p = Start-Process -FilePath $env:PACKAGE -Wait -PassThru `
+               -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`""
+          if ($p.ExitCode -ne 0) { Write-Error "installer exit code $($p.ExitCode)"; exit 1 }
+          $p = Start-Process -FilePath "$dir\LayoutEstimator.exe" -ArgumentList "--smoke-test" `
                -Wait -PassThru -NoNewWindow -RedirectStandardOutput smoke.txt -RedirectStandardError smoke-err.txt
           Get-Content smoke.txt; Get-Content smoke-err.txt
           if ($p.ExitCode -ne 0) { exit 1 }
-          Compress-Archive -Path dist\LayoutEstimator -DestinationPath ${{ matrix.zip }}
-      - name: Self-test (macOS)
+
+      # ---------- macOS：DMG → 挂载 → 用 DMG 里的程序自检
+      - name: Build and self-test DMG (macOS)
         if: runner.os == 'macOS'
         run: |
-          dist/LayoutEstimator.app/Contents/MacOS/LayoutEstimator --smoke-test
-          ditto -c -k --keepParent dist/LayoutEstimator.app ${{ matrix.zip }}
+          dmg="dist/LayoutEstimator-$VERSION-macOS.dmg"
+          bash installer/make_dmg.sh dist/LayoutEstimator.app "$dmg"
+          mnt="$RUNNER_TEMP/dmg"; mkdir -p "$mnt"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          "$mnt/LayoutEstimator.app/Contents/MacOS/LayoutEstimator" --smoke-test
+          hdiutil detach "$mnt"
+          echo "PACKAGE=$dmg" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.zip }}
-          path: ${{ matrix.zip }}
+          name: LayoutEstimator-${{ env.VERSION }}-${{ runner.os }}
+          path: ${{ env.PACKAGE }}
+          compression-level: 0          # 安装包本身已压缩
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.zip }}
+          files: ${{ env.PACKAGE }}
