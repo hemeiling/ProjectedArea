@@ -310,6 +310,8 @@ window.I18N = {
     "err.network": "无法连接服务器，请稍后重试。",
     "err.refMissing": "请为每张图纸填写标注总尺寸（mm）。",
     "err.refInvalid": "标注总尺寸必须是大于 0 的数字，或留空。",
+    "doc.logic": "计算逻辑说明",
+    "doc.logicTitle": "下载《计算逻辑说明》（Word）：面积测量、公摊工时、装柜与运费的公式和算例",
     "lang.label": "界面语言"
   },
   "en": {
@@ -621,6 +623,8 @@ window.I18N = {
     "err.network": "Cannot reach the server; please try again.",
     "err.refMissing": "Enter the overall dimension (mm) for every drawing.",
     "err.refInvalid": "The overall dimension must be a number above 0, or blank.",
+    "doc.logic": "Calculation logic (Chinese)",
+    "doc.logicTitle": "Download the calculation logic (Word, in Chinese): formulas and a worked example for area, shared labour hours, containers and freight",
     "lang.label": "Interface language"
   }
 };

@@ -25,6 +25,10 @@ def test_page_and_meta(client):
     assert any(r["name"] == meta["params"]["route"] for r in meta["routes"])
     js = client.get("/static/app.js")
     assert js.status_code == 200 and js.headers["cache-control"] == "no-cache"      # 更新后不用缓存里的旧脚本
+    href = re.search(r'class="doclink" href="([^"]+)"', client.get("/").text).group(1)
+    doc = client.get(href)                                                          # 顶栏“计算逻辑说明”可下载
+    assert doc.status_code == 200 and doc.content[:2] == b"PK"
+    assert doc.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def test_rejects_non_pdf_with_bilingual_message(client):
@@ -258,7 +262,7 @@ def test_ui_strings_exist_in_both_languages():
         assert set(re.findall(r"{\w+}", i18n["zh"][k])) == set(re.findall(r"{\w+}", i18n["en"][k])), k
     # 页面与脚本里直接引用的每个键都必须存在
     js = open(os.path.join(ROOT, "webapp", "static", "app.js"), encoding="utf-8").read()
-    used = set(re.findall(r'data-i18n(?:-aria)?="([\w.]+)"', open(os.path.join(ROOT, "webapp", "static", "index.html"), encoding="utf-8").read()))
+    used = set(re.findall(r'data-i18n(?:-aria|-title)?="([\w.]+)"', open(os.path.join(ROOT, "webapp", "static", "index.html"), encoding="utf-8").read()))
     used |= set(re.findall(r'\bt\("([\w.]+)"', js))
     # 流程图的步骤、阶段、运行位置是拼出来的键
     flow = js[js.index("const FLOW"): js.index("];", js.index("const FLOW"))]

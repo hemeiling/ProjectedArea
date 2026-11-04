@@ -18,6 +18,7 @@ import binascii
 import datetime as dt
 import hashlib
 import json
+import mimetypes
 import os
 import secrets
 import threading
@@ -45,6 +46,10 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 NO_CACHE = {"Cache-Control": "no-store"}
 IMAGE_KINDS = {"overlay": ("results", "{id}_overlay.png"), "stations": ("results", "{id}_stations.png"),
                "dimension": ("dim", "{id}.png")}
+
+
+# 顶栏“计算逻辑说明”是 Word 文件；Windows 打包版不一定能从系统查到 .docx 的类型
+mimetypes.add_type("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx")
 
 
 class RevalidatedStatic(StaticFiles):
