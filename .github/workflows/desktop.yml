@@ -2,14 +2,24 @@
 #   Windows：LayoutEstimator-<版本>-Windows-Setup.exe（按用户安装，不需要管理员权限）
 #   macOS  ：LayoutEstimator-<版本>-macOS.dmg（Apple 芯片）
 # 版本号取自仓库根目录 VERSION。
-# 手动运行：Actions → desktop-app → Run workflow（可选分支），安装包在该次运行页面底部的 Artifacts 中下载；
-# 推送 v<版本> 标签时同时发布到 Releases（标签必须与 VERSION 一致）。
+# 自动运行：任何分支推送了打包相关文件（下面 paths）时；也可手动：Actions → desktop-app → Run workflow（选分支）。
+# 安装包在该次运行页面底部的 Artifacts 中下载；推送 v<版本> 标签时同时发布到 Releases（标签必须与 VERSION 一致）。
 name: desktop-app
 
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    tags: ["v*"]                 # 标签推送不看 paths，总会运行
+    branches: ["**"]
+    paths:
+      - "VERSION"
+      - "installer/**"
+      - "desktop.py"
+      - "desktop.spec"
+      - "webapp/desktop.py"
+      - "webapp/smoke.py"
+      - "requirements*.txt"
+      - ".github/workflows/desktop.yml"
 
 permissions:
   contents: write          # 只在推送标签时用于创建 Release
