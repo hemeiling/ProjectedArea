@@ -131,6 +131,18 @@ def test_recalculate_rebuilds_workbook_without_remeasuring(client, layout_pdf):
     bad = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"oversize_share": 5}})
     assert bad.status_code == 400 and bad.json()["error"]["code"] == "bad_params"
 
+    # 按线填写框架箱柜数：网页汇总与 Excel 都用所填柜数
+    did = job["results"][0]["id"]
+    r = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"frame_boxes": {did: 2}}})
+    assert r.status_code == 200 and r.json()["params"]["frame_boxes"] == {did: 2}
+    e = r.json()["estimate"]["drawings"][0]
+    assert (e["frame_source"], e["frame_boxes_mid"]) == ("count", 2)
+    sm = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))["汇总"]
+    frame = next(row for row in sm.iter_rows() if row[0].value and "其中框架箱" in row[0].value)
+    assert frame[1].value == 2 and str(sm[f"B{frame[0].row - 1}"].value).startswith("=MAX(")
+    bad = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"frame_boxes": {did: 1.5}}})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "bad_params"
+
 
 def test_two_drawings_get_distinct_ids(client, tmp_path, layout_pdf):
     other = make_layout_pdf(str(tmp_path / "201-copy.pdf"))

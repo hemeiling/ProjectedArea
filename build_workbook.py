@@ -190,13 +190,29 @@ lines = [
     ("fr_hi", "运费 – 高 (US$)", "={c}{R[bx_hi]}*((1-" + P["os"] + ")*{c}{R[c_box]}+" + P["os"] + "*{c}{R[c_frm]})", "$#,##0", "", True, False),
 ]
 R = {line[0]: 5 + i for i, line in enumerate(lines)}
+# 按线填写了框架箱柜数的列：框架箱数 = 所填柜数（不按超限比例），低 / 中 / 高都用它，总柜数至少等于它
+FB = {str(d["id"]): pk["frame_boxes"][str(d["id"])] for d in D if str(d["id"]) in (pk.get("frame_boxes") or {})}
+ALT = {
+    "bx_lo": f"=MAX(ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*{P['uhi']}),0),{{c}}{{R[frame]}})",
+    "bx_mid": f"=MAX(ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*AVERAGE({P['ulo']},{P['uhi']})),0),{{c}}{{R[frame]}})",
+    "bx_hi": f"=MAX(ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*{P['ulo']}),0),{{c}}{{R[frame]}})",
+    "fr_lo": "=({c}{R[bx_lo]}-{c}{R[frame]})*{c}{R[c_box]}+{c}{R[frame]}*{c}{R[c_frm]}",
+    "fr_hi": "=({c}{R[bx_hi]}-{c}{R[frame]})*{c}{R[c_box]}+{c}{R[frame]}*{c}{R[c_frm]}",
+}
+FRAME_NOTE = ("按线填写的框架箱柜数：" + "；".join(f"{k} = {n} 柜" for k, n in FB.items())
+              + "（这些线不按超限比例，总柜数至少等于所填柜数）；其余按 中柜数 × 超限比例") if FB else ""
 for (key, lab, f, fmt, note, summ, hi) in lines:
     rr = R[key]
     sm.cell(rr, 1, lab).font = BOLD if hi else F()
     for j, d in enumerate(D):
         c = CL(2 + j)
+        own = str(d["id"]) in FB
+        if own and key == "frame":
+            put(sm, f"{c}{rr}", FB[str(d["id"])], fmt, BLUE, YEL)        # 人工填写的柜数
+            continue
         mmpt = f"DXF：1 单位 = {d['unit_mm']:g} mm" if d.get("source") == "dxf" else d["mm_per_pt"]
-        v = f.format(c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
+        v = (ALT[key] if own and key in ALT else f).format(
+            c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
         if v.replace(".", "").isdigit():
             v = float(v) if "." in v else v
         cell = put(sm, f"{c}{rr}", v, fmt, BOLD if hi else F(), KEY if hi else None)
@@ -204,7 +220,7 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
         put(sm, f"{TOT}{rr}", f"=SUM(B{rr}:{CL(N + 1)}{rr})", fmt, BOLD if hi else F(), KEY if hi else None)
     elif key == "ratio":
         put(sm, f"{TOT}{rr}", f"=IF({TOT}{R['base']}=0,\"-\",{TOT}{R['fine']}/{TOT}{R['base']})", fmt)
-    sm.cell(rr, N + 3, note).font = NOTE
+    sm.cell(rr, N + 3, FRAME_NOTE if key == "frame" and FB else note).font = NOTE
 nr = 5 + len(lines) + 2
 sm[f"A{nr}"] = "说明：蓝字 = 输入/自动测量值；黄底 = 需校准的关键假设；橙底 = 关键结果。面积为规划级估算（约 ±10–15%），箱数与运费为 ±25%。"; sm[f"A{nr}"].font = NOTE
 sm[f"A{nr + 1}"] = "未包含：设备重量校核（PDF 无重量）、目的地内陆运输、关税、滞箱费。"; sm[f"A{nr + 1}"].font = NOTE

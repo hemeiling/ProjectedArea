@@ -157,7 +157,7 @@ packing:
   packaging_factor: 1.15            # 包装后面积 / 设备投影面积
   container: {name: "40HQ", inner_length_m: 12.03, inner_width_m: 2.35, inner_height_m: 2.69, max_payload_t: 26.5}
   floor_utilisation: {low: 0.55, high: 0.75}   # 设备不可堆叠、形状不规则
-  oversize_share: 0.10              # 需框架箱/开顶箱比例（宽>2.35 m 或 高>2.6 m）
+  oversize_share: 0.0               # 框架箱/开顶箱比例。默认 0：是否走框架箱/开顶箱由人工决定，在网页按线填写柜数（业务决定，2026-11）
 
 # ---------- 第三步：运费参数 ----------
 freight:

@@ -149,7 +149,7 @@
     renderOcrPill();
     if (state.meta) {
       buildParamGrid($("paramGrid"), readParams($("paramGrid")));
-      if (state.job) buildParamGrid($("recalcGrid"), readParams($("recalcGrid")));
+      if (state.job) { buildParamGrid($("recalcGrid"), readParams($("recalcGrid"))); buildFrameGrid(state.job, readFrameBoxes()); }
     }
     renderRows();
     renderLibrary();
@@ -273,6 +273,47 @@
       meta.classList.toggle("bad", bad);
       meta.textContent = msg || t(changed ? "params.changed" : "params.default", { v: paramText(key, d) });
     }
+  }
+
+  // 每条线的框架箱/开顶箱柜数（可选）：填了就用所填柜数，空着按超限比例
+  function buildFrameGrid(job, values) {
+    const grid = $("frameGrid"), cols = (job.estimate && job.estimate.drawings) || [];
+    const v = values || (job.params && job.params.frame_boxes) || {};
+    $("frameBox").hidden = cols.length === 0;
+    grid.textContent = "";
+    for (const c of cols) {
+      const share = c.frame_boxes_by_share ?? c.frame_boxes_mid;   // 旧任务没有 frame_boxes_by_share
+      const label = document.createElement("label");
+      const span = document.createElement("span");
+      span.textContent = c.name;
+      const input = document.createElement("input");
+      input.type = "number"; input.min = "0"; input.step = "1"; input.inputMode = "numeric";
+      input.max = state.meta.max_frame_boxes;
+      input.dataset.drawing = c.id;
+      input.value = v[c.id] ?? "";
+      input.placeholder = t("frame.placeholder", { n: share });
+      const meta = document.createElement("small");
+      meta.className = "param-meta";
+      const check = () => {
+        const n = Number(input.value);
+        const bad = input.value !== "" && !(Number.isInteger(n) && n >= 0 && n <= state.meta.max_frame_boxes);
+        input.classList.toggle("invalid", bad);
+        meta.classList.toggle("bad", bad);
+        meta.classList.toggle("changed", !bad && input.value !== "");
+        label.classList.toggle("changed", !bad && input.value !== "");
+        meta.textContent = t(bad ? "frame.bad" : input.value === "" ? "frame.byShare" : "frame.byCount", { n: share });
+      };
+      input.addEventListener("input", check);
+      check();
+      label.append(span, input, meta);
+      grid.appendChild(label);
+    }
+  }
+
+  function readFrameBoxes() {
+    const out = {};
+    $("frameGrid").querySelectorAll("input").forEach((el) => { if (el.value !== "") out[el.dataset.drawing] = el.value; });
+    return out;
   }
 
   function readParams(grid) {
@@ -550,6 +591,7 @@
       if (!res.ok) { state.job = null; showNoJob(say(body.error)); return; }
       state.job = body;
       buildParamGrid($("recalcGrid"), body.params);
+      buildFrameGrid(body);
       $("recalcMsg").textContent = ""; $("recalcError").textContent = "";
       renderJob(body);
       loadRecent();
@@ -569,7 +611,7 @@
       state.job = body;
       renderJob(body);
       if (isRunning()) state.pollTimer = setTimeout(() => poll(id), POLL_MS);
-      else { buildParamGrid($("recalcGrid"), body.params); loadRecent(); loadLibrary(); loadSystem(); }
+      else { buildParamGrid($("recalcGrid"), body.params); buildFrameGrid(body); loadRecent(); loadLibrary(); loadSystem(); }
     } catch (_) {
       state.pollFailures += 1;
       if (state.pollFailures >= 3) $("progressText").textContent = t("err.network");
@@ -705,7 +747,8 @@
         ? t("row.labor_hours", { basis: t(`basis.${job.estimate.params.labor_area_basis}`) }) : t(`row.${key}`);
       html += `<tr class="${isKey ? "key" : ""}"><td>${esc(label)}</td>`;
       for (const c of cols) {
-        const src = key === "fine_m2" && c.fine_source === "footprint" ? `<span class="src">${esc(t("fine.fromFootprint"))}</span>` : "";
+        const src = key === "fine_m2" && c.fine_source === "footprint" ? `<span class="src">${esc(t("fine.fromFootprint"))}</span>`
+          : key === "frame_boxes_mid" && c.frame_source === "count" ? `<span class="src">${esc(t("frame.fromCount"))}</span>` : "";
         html += `<td class="num">${fmt(c[key], kind)}${src}</td>`;
       }
       if (cols.length > 1) html += `<td class="num">${hasTotal ? fmt(tot[key], kind) : ""}</td>`;
@@ -932,12 +975,13 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
     try {
       const res = await fetch(`/api/jobs/${state.job.id}/estimate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ params: readParams($("recalcGrid")) }),
+        body: JSON.stringify({ params: { ...readParams($("recalcGrid")), frame_boxes: readFrameBoxes() } }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) { $("recalcError").textContent = say(body.error) || `HTTP ${res.status}`; return; }
       state.job = body;
       renderJob(body);
+      buildFrameGrid(body);
       $("recalcMsg").textContent = t("recalc.done");
     } catch (_) {
       $("recalcError").textContent = t("err.network");

@@ -226,6 +226,7 @@ def create_app(data_dir=None, desktop=False):
         k, lo, hi = estimate.FLAT_RACK_RATE
         return dict(ocr_available=J.ocr_available(), params=estimate.read_params(cfg),
                     param_ranges={**{key: [a, b] for key, (_, a, b) in estimate.PARAMS.items()}, k: [lo, hi]},
+                    max_frame_boxes=estimate.MAX_FRAME_BOXES,
                     labor_source=cfg["labor"].get("source", ""),
                     labor_area_basis_source=cfg["labor"].get("area_basis_source", ""),
                     labor_area_bases=list(estimate.LABOR_AREA_BASES),

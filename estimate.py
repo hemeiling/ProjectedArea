@@ -22,6 +22,8 @@ PARAMS = {
 }
 # 框架箱/开顶箱海运价按航线取默认值（config 中每条航线一个），网页可直接输入，不用倍数
 FLAT_RACK_RATE = ("flat_rack_rate_usd", 0.0, 1e6)
+# 按线直接填写的框架箱/开顶箱柜数：{图纸 id: 柜数}；填了就不再按超限比例（业务输入，图纸不决定）
+MAX_FRAME_BOXES = 10000
 # 公摊工时按哪种面积计算（业务决定，图纸不决定）：基准 = 产线总长×宽，精细 = 各工位投影面积之和
 LABOR_AREA_BASES = ("baseline", "fine")
 
@@ -44,6 +46,7 @@ def read_params(cfg):
     p["labor_area_basis"] = cfg["labor"]["area_basis"]
     p["route"] = cfg["freight"]["route"]
     p["flat_rack_rate_usd"] = cfg["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]]
+    p["frame_boxes"] = {}
     return p
 
 
@@ -77,7 +80,25 @@ def validate_params(raw, cfg):
             else cfg["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]])
     if p["floor_utilisation_low"] > p["floor_utilisation_high"]:
         raise ValueError("保守利用率不能高于乐观利用率 / Conservative utilisation exceeds optimistic")
+    p["frame_boxes"] = _frame_boxes(raw.get("frame_boxes"))
     return p
+
+
+def _frame_boxes(raw):
+    """{图纸 id: 柜数}；空值表示该线按比例。柜数必须是 0 至 MAX_FRAME_BOXES 的整数。"""
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("框架箱柜数格式错误 / frame_boxes must map drawing id to a count")
+    out = {}
+    for did, v in raw.items():
+        if v in (None, ""):
+            continue
+        n = _number({did: v}, did, 0, MAX_FRAME_BOXES)
+        if n != int(n):
+            raise ValueError(f"框架箱柜数必须是整数（{did}）/ Flat-rack count must be a whole number ({did})")
+        out[str(did)] = int(n)
+    return out
 
 
 def apply_params(cfg, p):
@@ -88,6 +109,7 @@ def apply_params(cfg, p):
     out["labor"]["area_basis"] = p["labor_area_basis"]
     out["freight"]["route"] = p["route"]
     out["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]] = p["flat_rack_rate_usd"]
+    out["packing"]["frame_boxes"] = dict(p.get("frame_boxes") or {})
     return out
 
 
@@ -120,12 +142,23 @@ def summarize(drawing, p, cfg):
     boxes_low = _roundup(packed / (floor * uhi))           # 乐观利用率
     boxes_mid = _roundup(packed / (floor * (ulo + uhi) / 2))
     boxes_high = _roundup(packed / (floor * ulo))          # 保守利用率
-    frame_mid = _round(boxes_mid * os_)
+    frame_by_share = _round(boxes_mid * os_)
     rate = cfg["freight"]["rates_usd_per_40ft"][p["route"]]
     ins, loc = p["insurance_pct_of_freight"], p["local_charges_usd_per_box"]
     per_box = rate * (1 + ins) + loc
     per_frame = p["flat_rack_rate_usd"] * (1 + ins) + loc
-    blended = (1 - os_) * per_box + os_ * per_frame
+    count = (p.get("frame_boxes") or {}).get(str(drawing["id"]))
+    if count is None:
+        # 按超限比例：中间情形取整数框架箱数，低 / 高按加权单价
+        frame_mid = frame_by_share
+        blended = (1 - os_) * per_box + os_ * per_frame
+        freight_low, freight_high = boxes_low * blended, boxes_high * blended
+    else:
+        # 填写了柜数：三种情形都用这个数；总柜数至少等于框架箱柜数
+        boxes_low, boxes_mid, boxes_high = (max(b, count) for b in (boxes_low, boxes_mid, boxes_high))
+        frame_mid = count
+        freight_low = (boxes_low - count) * per_box + count * per_frame
+        freight_high = (boxes_high - count) * per_box + count * per_frame
     return dict(
         station_count=len(stations),
         fine_source="stations" if stations else "footprint",
@@ -141,12 +174,13 @@ def summarize(drawing, p, cfg):
         labor_hours=labor_area * (rf + re_),
         packed_m2=packed,
         boxes_low=boxes_low, boxes_mid=boxes_mid, boxes_high=boxes_high,
-        frame_boxes_mid=frame_mid,
+        frame_boxes_mid=frame_mid, frame_boxes_by_share=frame_by_share,
+        frame_source="share" if count is None else "count",
         rate_usd_per_40ft=rate, flat_rack_rate_usd=p["flat_rack_rate_usd"],
         cost_per_box_usd=per_box, cost_per_frame_usd=per_frame,
-        freight_low_usd=boxes_low * blended,
+        freight_low_usd=freight_low,
         freight_mid_usd=(boxes_mid - frame_mid) * per_box + frame_mid * per_frame,
-        freight_high_usd=boxes_high * blended,
+        freight_high_usd=freight_high,
     )
 
 

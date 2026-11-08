@@ -23,7 +23,7 @@ def drawing(footprint, lanes, stations=()):
 
 
 def test_101_matches_readme(cfg):
-    # README：101 基准 69.8×6.9 ≈ 482 m²，精细 216 m²；公摊工时（钳工+电工）501 → 225 h；箱数 14（12–16）；运费 ≈ US$81k
+    # README：101 基准 69.8×6.9 ≈ 482 m²，精细 216 m²；公摊工时（钳工+电工）501 → 225 h；箱数 14（12–16）；运费 ≈ US$77k
     e = estimate.summarize(drawing(215.9, [(69.8, 6.9)]), estimate.read_params(cfg), cfg)
     assert e["baseline_m2"] == pytest.approx(481.62)
     assert round(e["labor_hours_baseline"]) == 501 and round(e["labor_hours_fine"]) == 225
@@ -32,9 +32,9 @@ def test_101_matches_readme(cfg):
     assert round(e["labor_hours_fitter"]) == 250 and round(e["labor_hours_electrician"]) == 250
     assert e["labor_hours"] == pytest.approx(e["labor_hours_baseline"])
     # 低 / 高只换地板利用率（乐观 75% / 保守 55%），不再乘面积误差系数
-    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (12, 14, 16, 1)
-    # 框架箱运价直接取该航线的框架箱运价（config 默认 7,994），不再用 40HQ 运价 × 倍数
-    assert e["freight_mid_usd"] == pytest.approx(13 * (3997 + 1500) + 1 * (7994 + 1500))
+    # 超限比例默认 0：是否走框架箱由人工按线填写，系统不自动安排
+    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (12, 14, 16, 0)
+    assert e["freight_mid_usd"] == pytest.approx(14 * (3997 + 1500))
 
 
 def test_102_matches_readme(cfg):
@@ -44,7 +44,7 @@ def test_102_matches_readme(cfg):
     assert e["fine_m2"] == pytest.approx(1518.6) and e["fine_source"] == "stations"
     assert round(e["baseline_m2"]) == 4274 and round(e["labor_hours_baseline"]) == 4444 and round(e["labor_hours_fine"]) == 1579
     assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"]) == (83, 96, 113)
-    assert round(e["freight_mid_usd"], -3) == 568000
+    assert round(e["freight_mid_usd"], -3) == 528000
 
 
 def test_fine_area_falls_back_to_footprint_without_stations(cfg):
@@ -116,3 +116,38 @@ def test_flat_rack_rate_is_entered_directly(cfg):
     out = estimate.apply_params(cfg, p)            # 写回 config 副本，供工作簿使用
     assert out["freight"]["flat_rack_rates_usd_per_40ft"]["上海 → 纽约"] == 12000.0 and cfg == before
     assert "footprint_uncertainty_low" not in p and "flat_rack_multiplier" not in p
+
+
+def test_frame_boxes_entered_per_line(cfg):
+    # 按线直接填写框架箱柜数：该线不再按超限比例，低 / 中 / 高都用所填柜数；其他线不受影响
+    lines = [dict(drawing(215.9, [(69.8, 6.9)]), id="101"), dict(drawing(215.9, [(69.8, 6.9)]), id="102")]
+    p = estimate.validate_params({"frame_boxes": {"101": "3", "102": ""}, "oversize_share": 0.1}, cfg)
+    assert p["frame_boxes"] == {"101": 3}
+    a, b = estimate.estimate(lines, p, cfg)["drawings"]
+    per_box, per_frame = a["cost_per_box_usd"], a["cost_per_frame_usd"]
+    assert (a["frame_source"], a["frame_boxes_mid"], a["frame_boxes_by_share"]) == ("count", 3, 1)
+    assert (a["boxes_low"], a["boxes_mid"], a["boxes_high"]) == (12, 14, 16)          # 柜数不变，只是其中 3 个是框架箱
+    assert a["freight_low_usd"] == pytest.approx(9 * per_box + 3 * per_frame)
+    assert a["freight_mid_usd"] == pytest.approx(11 * per_box + 3 * per_frame)
+    assert a["freight_high_usd"] == pytest.approx(13 * per_box + 3 * per_frame)
+    assert (b["frame_source"], b["frame_boxes_mid"]) == ("share", 1)                     # 空着：按比例
+    assert b["freight_low_usd"] == pytest.approx(12 * (0.9 * per_box + 0.1 * per_frame))
+
+
+def test_frame_boxes_above_area_count_raise_the_total(cfg):
+    # 填的框架箱柜数比按面积算出的柜数还多：总柜数取所填柜数，全部按框架箱计费
+    p = estimate.validate_params({"frame_boxes": {"X": 20}}, cfg)
+    e = estimate.summarize(drawing(215.9, [(69.8, 6.9)]), p, cfg)
+    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (20, 20, 20, 20)
+    assert e["freight_mid_usd"] == pytest.approx(20 * e["cost_per_frame_usd"])
+    zero = estimate.summarize(drawing(215.9, [(69.8, 6.9)]), estimate.validate_params({"frame_boxes": {"X": 0}}, cfg), cfg)
+    assert zero["frame_boxes_mid"] == 0 and zero["freight_mid_usd"] == pytest.approx(14 * zero["cost_per_box_usd"])
+
+
+def test_frame_boxes_validation(cfg):
+    for bad in ({"frame_boxes": {"101": -1}}, {"frame_boxes": {"101": 1.5}}, {"frame_boxes": {"101": "abc"}},
+                {"frame_boxes": {"101": 10001}}, {"frame_boxes": [3]}):
+        with pytest.raises(ValueError):
+            estimate.validate_params(bad, cfg)
+    out = estimate.apply_params(cfg, estimate.validate_params({"frame_boxes": {"101": 2}}, cfg))
+    assert out["packing"]["frame_boxes"] == {"101": 2} and "frame_boxes" not in cfg["packing"]
