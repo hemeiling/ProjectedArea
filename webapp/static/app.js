@@ -285,45 +285,81 @@
     }
   }
 
-  // 每条线的框架箱/开顶箱柜数（可选）：填了就用所填柜数，空着按超限比例
+  // 每条线的框架箱/开顶箱柜数（可选）：下拉选图纸 + 填柜数 + 添加，只列出需要框架箱的线；没添加的线 = 0 柜
   function buildFrameGrid(job, values) {
-    const grid = $("frameGrid"), cols = (job.estimate && job.estimate.drawings) || [];
-    const v = values || (job.params && job.params.frame_boxes) || {};
-    $("frameBox").hidden = cols.length === 0;
-    grid.textContent = "";
-    for (const c of cols) {
-      const share = c.frame_boxes_by_share ?? c.frame_boxes_mid;   // 旧任务没有 frame_boxes_by_share
-      const label = document.createElement("label");
-      const span = document.createElement("span");
-      span.textContent = c.name;
-      const input = document.createElement("input");
-      input.type = "number"; input.min = "0"; input.step = "1"; input.inputMode = "numeric";
-      input.max = state.meta.max_frame_boxes;
-      input.dataset.drawing = c.id;
-      input.value = v[c.id] ?? "";
-      input.placeholder = t("frame.placeholder", { n: share });
-      const meta = document.createElement("small");
-      meta.className = "param-meta";
-      const check = () => {
-        const n = Number(input.value);
-        const bad = input.value !== "" && !(Number.isInteger(n) && n >= 0 && n <= state.meta.max_frame_boxes);
-        input.classList.toggle("invalid", bad);
-        meta.classList.toggle("bad", bad);
-        meta.classList.toggle("changed", !bad && input.value !== "");
-        label.classList.toggle("changed", !bad && input.value !== "");
-        meta.textContent = t(bad ? "frame.bad" : input.value === "" ? "frame.byShare" : "frame.byCount", { n: share });
-      };
-      input.addEventListener("input", check);
-      check();
-      label.append(span, input, meta);
-      grid.appendChild(label);
+    const cols = (job.estimate && job.estimate.drawings) || [];
+    const ids = new Set(cols.map((c) => String(c.id)));
+    state.frameCols = cols;
+    state.frames = {};
+    for (const [id, n] of Object.entries(values || (job.params && job.params.frame_boxes) || {})) {
+      if (ids.has(String(id))) state.frames[String(id)] = String(n);
     }
+    $("frameBox").hidden = cols.length === 0;
+    renderFrameGrid();
+  }
+
+  const frameCountOk = (v) => { const n = Number(v); return v !== "" && Number.isInteger(n) && n >= 0 && n <= state.meta.max_frame_boxes; };
+
+  function frameCountInput(value) {
+    const input = document.createElement("input");
+    input.type = "number"; input.min = "0"; input.step = "1"; input.inputMode = "numeric";
+    input.max = state.meta.max_frame_boxes;
+    input.value = value;
+    input.setAttribute("aria-label", t("frame.count"));
+    return input;
+  }
+
+  function renderFrameGrid() {
+    const grid = $("frameGrid");
+    grid.textContent = "";
+    const added = state.frameCols.filter((c) => String(c.id) in state.frames);
+    // 已添加的线：名称 · 柜数（可改）· 删除
+    for (const c of added) {
+      const id = String(c.id);
+      const row = document.createElement("div");
+      row.className = "frame-row";
+      const name = document.createElement("span");
+      name.className = "name"; name.textContent = c.name;
+      const input = frameCountInput(state.frames[id]);
+      const unit = document.createElement("span");
+      unit.className = "muted"; unit.textContent = t("frame.unit");
+      input.addEventListener("input", () => { state.frames[id] = input.value; input.classList.toggle("invalid", !frameCountOk(input.value)); });
+      input.classList.toggle("invalid", !frameCountOk(input.value));
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "link"; del.textContent = t("frame.remove");
+      del.addEventListener("click", () => { delete state.frames[id]; renderFrameGrid(); });
+      row.append(name, input, unit, del);
+      grid.appendChild(row);
+    }
+    if (!added.length) {
+      const none = document.createElement("p");
+      none.className = "note"; none.textContent = t("frame.none");
+      grid.appendChild(none);
+    }
+    // 添加一行：下拉只列还没添加的图纸
+    const rest = state.frameCols.filter((c) => !(String(c.id) in state.frames));
+    if (!rest.length) return;
+    const row = document.createElement("div");
+    row.className = "frame-row frame-add";
+    const pick = document.createElement("select");
+    pick.setAttribute("aria-label", t("frame.pick"));
+    pick.innerHTML = `<option value="">${esc(t("frame.pick"))}</option>` +
+      rest.map((c) => `<option value="${esc(String(c.id))}">${esc(c.name)}</option>`).join("");
+    const input = frameCountInput("");
+    input.placeholder = t("frame.count");
+    const add = document.createElement("button");
+    add.type = "button"; add.textContent = t("frame.add");
+    const ready = () => { add.disabled = !(pick.value && frameCountOk(input.value)); };
+    pick.addEventListener("change", ready);
+    input.addEventListener("input", () => { input.classList.toggle("invalid", input.value !== "" && !frameCountOk(input.value)); ready(); });
+    add.addEventListener("click", () => { state.frames[pick.value] = input.value; renderFrameGrid(); });
+    ready();
+    row.append(pick, input, add);
+    grid.appendChild(row);
   }
 
   function readFrameBoxes() {
-    const out = {};
-    $("frameGrid").querySelectorAll("input").forEach((el) => { if (el.value !== "") out[el.dataset.drawing] = el.value; });
-    return out;
+    return { ...(state.frames || {}) };
   }
 
   function readParams(grid) {
