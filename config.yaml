@@ -157,7 +157,6 @@ packing:
   packaging_factor: 1.15            # 包装后面积 / 设备投影面积
   container: {name: "40HQ", inner_length_m: 12.03, inner_width_m: 2.35, inner_height_m: 2.69, max_payload_t: 26.5}
   floor_utilisation: {low: 0.55, high: 0.75}   # 设备不可堆叠、形状不规则
-  footprint_uncertainty: {low: 0.85, high: 1.10}
   oversize_share: 0.10              # 需框架箱/开顶箱比例（宽>2.35 m 或 高>2.6 m）
 
 # ---------- 第三步：运费参数 ----------
@@ -169,6 +168,10 @@ freight:
     "上海 → 洛杉矶": 7352
     "上海 → 纽约": 9726
   rates_source: "Drewry World Container Index, 2026-09-10 (https://www.mtsinsights.com/summaries/10873/)"
-  flat_rack_multiplier: 2.0
+  flat_rack_rates_usd_per_40ft:     # 框架箱/开顶箱海运价（US$/柜），网页可直接改。占位值 = 40HQ 现货价 × 2，用货代报价替换
+    "上海 → 鹿特丹": 7994
+    "上海 → 热那亚": 8432
+    "上海 → 洛杉矶": 14704
+    "上海 → 纽约": 19452
   local_charges_usd_per_box: 1500   # 起运港+目的港杂费、报关、短驳（占位，用货代报价替换）
   insurance_pct_of_freight: 0.0

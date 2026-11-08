@@ -23,7 +23,7 @@ def drawing(footprint, lanes, stations=()):
 
 
 def test_101_matches_readme(cfg):
-    # README：101 基准 69.8×6.9 ≈ 482 m²，精细 216 m²；公摊工时（钳工+电工）501 → 225 h；箱数 14（10–18）；运费 ≈ US$81k
+    # README：101 基准 69.8×6.9 ≈ 482 m²，精细 216 m²；公摊工时（钳工+电工）501 → 225 h；箱数 14（12–16）；运费 ≈ US$81k
     e = estimate.summarize(drawing(215.9, [(69.8, 6.9)]), estimate.read_params(cfg), cfg)
     assert e["baseline_m2"] == pytest.approx(481.62)
     assert round(e["labor_hours_baseline"]) == 501 and round(e["labor_hours_fine"]) == 225
@@ -31,17 +31,19 @@ def test_101_matches_readme(cfg):
     assert e["labor_area_basis"] == "baseline" and e["labor_area_m2"] == e["baseline_m2"]
     assert round(e["labor_hours_fitter"]) == 250 and round(e["labor_hours_electrician"]) == 250
     assert e["labor_hours"] == pytest.approx(e["labor_hours_baseline"])
-    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (10, 14, 18, 1)
-    assert e["freight_mid_usd"] == pytest.approx(13 * (3997 + 1500) + 1 * (3997 * 2 + 1500))
+    # 低 / 高只换地板利用率（乐观 75% / 保守 55%），不再乘面积误差系数
+    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (12, 14, 16, 1)
+    # 框架箱运价直接取该航线的框架箱运价（config 默认 7,994），不再用 40HQ 运价 × 倍数
+    assert e["freight_mid_usd"] == pytest.approx(13 * (3997 + 1500) + 1 * (7994 + 1500))
 
 
 def test_102_matches_readme(cfg):
-    # README：102 基准 103.3×20.2 + 107.2×20.4 ≈ 4,274 m²，精细 1,519 m²；公摊工时（钳工+电工）4,444 → 1,579 h；箱数 96（71–124）
+    # README：102 基准 103.3×20.2 + 107.2×20.4 ≈ 4,274 m²，精细 1,519 m²；公摊工时（钳工+电工）4,444 → 1,579 h；箱数 96（83–113）
     stations = [dict(footprint_m2=1000.0), dict(footprint_m2=518.6)]
     e = estimate.summarize(drawing(1518.5, [(103.3, 20.2), (107.2, 20.4)], stations), estimate.read_params(cfg), cfg)
     assert e["fine_m2"] == pytest.approx(1518.6) and e["fine_source"] == "stations"
     assert round(e["baseline_m2"]) == 4274 and round(e["labor_hours_baseline"]) == 4444 and round(e["labor_hours_fine"]) == 1579
-    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"]) == (71, 96, 124)
+    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"]) == (83, 96, 113)
     assert round(e["freight_mid_usd"], -3) == 568000
 
 
@@ -86,7 +88,8 @@ def test_validate_params(cfg):
     assert p["labor_area_basis"] == cfg["labor"]["area_basis"]
     for bad in ({"fitter_hours_per_m2": "abc"}, {"electrician_hours_per_m2": -1}, {"labor_area_basis": "envelope"},
                 {"packaging_factor": -1}, {"route": "火星"},
-                {"floor_utilisation_low": 0.9, "floor_utilisation_high": 0.5}):
+                {"floor_utilisation_low": 0.9, "floor_utilisation_high": 0.5},
+                {"flat_rack_rate_usd": "abc"}, {"flat_rack_rate_usd": -1}):
         with pytest.raises(ValueError):
             estimate.validate_params(bad, cfg)
 
@@ -96,3 +99,20 @@ def test_apply_params_does_not_touch_base_config(cfg):
     p = estimate.validate_params({"fitter_hours_per_m2": 1.0, "labor_area_basis": "fine"}, cfg)
     out = estimate.apply_params(cfg, p)
     assert out["labor"]["fitter_hours_per_m2"] == 1.0 and out["labor"]["area_basis"] == "fine" and cfg == before
+
+
+def test_flat_rack_rate_is_entered_directly(cfg):
+    # 框架箱运价直接输入（US$/柜），不再是 40HQ 运价 × 倍数；未填时取所选航线的默认值
+    rates = cfg["freight"]["flat_rack_rates_usd_per_40ft"]
+    assert estimate.validate_params({}, cfg)["flat_rack_rate_usd"] == rates[cfg["freight"]["route"]]
+    assert estimate.validate_params({"route": "上海 → 纽约"}, cfg)["flat_rack_rate_usd"] == rates["上海 → 纽约"]
+    p = estimate.validate_params({"flat_rack_rate_usd": "12000", "oversize_share": 1.0, "route": "上海 → 纽约"}, cfg)
+    assert p["flat_rack_rate_usd"] == 12000.0
+    e = estimate.summarize(drawing(100.0, [(20, 10)]), p, cfg)
+    assert e["cost_per_frame_usd"] == pytest.approx(12000 + cfg["freight"]["local_charges_usd_per_box"])
+    assert e["cost_per_box_usd"] == pytest.approx(9726 + cfg["freight"]["local_charges_usd_per_box"])   # 40HQ 不受影响
+    assert e["freight_mid_usd"] == pytest.approx(e["boxes_mid"] * e["cost_per_frame_usd"])
+    before = copy.deepcopy(cfg)
+    out = estimate.apply_params(cfg, p)            # 写回 config 副本，供工作簿使用
+    assert out["freight"]["flat_rack_rates_usd_per_40ft"]["上海 → 纽约"] == 12000.0 and cfg == before
+    assert "footprint_uncertainty_low" not in p and "flat_rack_multiplier" not in p

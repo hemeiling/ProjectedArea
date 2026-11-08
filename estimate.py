@@ -16,13 +16,12 @@ PARAMS = {
     "packaging_factor": (("packing", "packaging_factor"), 0.5, 5.0),
     "floor_utilisation_low": (("packing", "floor_utilisation", "low"), 0.05, 1.0),
     "floor_utilisation_high": (("packing", "floor_utilisation", "high"), 0.05, 1.0),
-    "footprint_uncertainty_low": (("packing", "footprint_uncertainty", "low"), 0.1, 2.0),
-    "footprint_uncertainty_high": (("packing", "footprint_uncertainty", "high"), 0.1, 2.0),
     "oversize_share": (("packing", "oversize_share"), 0.0, 1.0),
-    "flat_rack_multiplier": (("freight", "flat_rack_multiplier"), 0.0, 10.0),
     "local_charges_usd_per_box": (("freight", "local_charges_usd_per_box"), 0.0, 1e6),
     "insurance_pct_of_freight": (("freight", "insurance_pct_of_freight"), 0.0, 1.0),
 }
+# 框架箱/开顶箱海运价按航线取默认值（config 中每条航线一个），网页可直接输入，不用倍数
+FLAT_RACK_RATE = ("flat_rack_rate_usd", 0.0, 1e6)
 # 公摊工时按哪种面积计算（业务决定，图纸不决定）：基准 = 产线总长×宽，精细 = 各工位投影面积之和
 LABOR_AREA_BASES = ("baseline", "fine")
 
@@ -44,7 +43,18 @@ def read_params(cfg):
     p = {k: _get(cfg, path) for k, (path, _, _) in PARAMS.items()}
     p["labor_area_basis"] = cfg["labor"]["area_basis"]
     p["route"] = cfg["freight"]["route"]
+    p["flat_rack_rate_usd"] = cfg["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]]
     return p
+
+
+def _number(raw, k, lo, hi):
+    try:
+        v = float(raw[k])
+    except (TypeError, ValueError):
+        raise ValueError(f"参数 {k} 不是数字 / Parameter {k} is not a number")
+    if not (lo <= v <= hi) or math.isnan(v):
+        raise ValueError(f"参数 {k} 超出范围 {lo}–{hi} / Parameter {k} out of range {lo}–{hi}")
+    return v
 
 
 def validate_params(raw, cfg):
@@ -53,13 +63,7 @@ def validate_params(raw, cfg):
     for k, (_, lo, hi) in PARAMS.items():
         if raw.get(k) in (None, ""):
             continue
-        try:
-            v = float(raw[k])
-        except (TypeError, ValueError):
-            raise ValueError(f"参数 {k} 不是数字 / Parameter {k} is not a number")
-        if not (lo <= v <= hi) or math.isnan(v):
-            raise ValueError(f"参数 {k} 超出范围 {lo}–{hi} / Parameter {k} out of range {lo}–{hi}")
-        p[k] = v
+        p[k] = _number(raw, k, lo, hi)
     if raw.get("labor_area_basis"):
         if raw["labor_area_basis"] not in LABOR_AREA_BASES:
             raise ValueError(f"未知面积口径 {raw['labor_area_basis']} / Unknown area basis {raw['labor_area_basis']}")
@@ -68,10 +72,11 @@ def validate_params(raw, cfg):
         if raw["route"] not in cfg["freight"]["rates_usd_per_40ft"]:
             raise ValueError(f"未知航线 {raw['route']} / Unknown route {raw['route']}")
         p["route"] = raw["route"]
+    k, lo, hi = FLAT_RACK_RATE
+    p[k] = (_number(raw, k, lo, hi) if raw.get(k) not in (None, "")
+            else cfg["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]])
     if p["floor_utilisation_low"] > p["floor_utilisation_high"]:
         raise ValueError("保守利用率不能高于乐观利用率 / Conservative utilisation exceeds optimistic")
-    if p["footprint_uncertainty_low"] > p["footprint_uncertainty_high"]:
-        raise ValueError("面积误差下限系数不能高于上限 / Lower uncertainty factor exceeds upper")
     return p
 
 
@@ -82,6 +87,7 @@ def apply_params(cfg, p):
         _set(out, path, p[k])
     out["labor"]["area_basis"] = p["labor_area_basis"]
     out["freight"]["route"] = p["route"]
+    out["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]] = p["flat_rack_rate_usd"]
     return out
 
 
@@ -111,14 +117,14 @@ def summarize(drawing, p, cfg):
     ulo, uhi = p["floor_utilisation_low"], p["floor_utilisation_high"]
     pack, os_ = p["packaging_factor"], p["oversize_share"]
     packed = fine * pack
-    boxes_low = _roundup(fine * p["footprint_uncertainty_low"] * pack / (floor * uhi))
+    boxes_low = _roundup(packed / (floor * uhi))           # 乐观利用率
     boxes_mid = _roundup(packed / (floor * (ulo + uhi) / 2))
-    boxes_high = _roundup(fine * p["footprint_uncertainty_high"] * pack / (floor * ulo))
+    boxes_high = _roundup(packed / (floor * ulo))          # 保守利用率
     frame_mid = _round(boxes_mid * os_)
     rate = cfg["freight"]["rates_usd_per_40ft"][p["route"]]
     ins, loc = p["insurance_pct_of_freight"], p["local_charges_usd_per_box"]
     per_box = rate * (1 + ins) + loc
-    per_frame = rate * p["flat_rack_multiplier"] * (1 + ins) + loc
+    per_frame = p["flat_rack_rate_usd"] * (1 + ins) + loc
     blended = (1 - os_) * per_box + os_ * per_frame
     return dict(
         station_count=len(stations),
@@ -136,7 +142,7 @@ def summarize(drawing, p, cfg):
         packed_m2=packed,
         boxes_low=boxes_low, boxes_mid=boxes_mid, boxes_high=boxes_high,
         frame_boxes_mid=frame_mid,
-        rate_usd_per_40ft=rate,
+        rate_usd_per_40ft=rate, flat_rack_rate_usd=p["flat_rack_rate_usd"],
         cost_per_box_usd=per_box, cost_per_frame_usd=per_frame,
         freight_low_usd=boxes_low * blended,
         freight_mid_usd=(boxes_mid - frame_mid) * per_box + frame_mid * per_frame,

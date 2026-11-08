@@ -64,13 +64,11 @@ rows = [
     ("cW", f"{pk['container']['name']} 内宽 (m)", pk["container"]["inner_width_m"], "0.00", "", False),
     ("ulo", "地板利用率 – 保守", pk["floor_utilisation"]["low"], "0%", "设备不可堆叠、外形不规则、需绑扎空间", True),
     ("uhi", "地板利用率 – 乐观", pk["floor_utilisation"]["high"], "0%", "", True),
-    ("flo", "面积测量误差 – 下限系数", pk["footprint_uncertainty"]["low"], "0.00", "浅灰色设备填充不全 vs 少量线条噪声", False),
-    ("fhi", "面积测量误差 – 上限系数", pk["footprint_uncertainty"]["high"], "0.00", "", False),
     ("os", "超限设备比例（框架箱/开顶箱）", pk["oversize_share"], "0%", "宽 >2.35 m 或高 >2.6 m 的设备；PDF 无高度信息，需补充设备总图", True),
     ("运费", None, None, None),
     ("route", "目的航线", fr["route"], "@", "下拉选择", True),
     ("rate", "该航线海运价 (US$/40HQ)", None, "$#,##0", "由下方运价表查得，按每个 40HQ（40 尺高柜）计", False),
-    ("frm", "框架箱运价倍数", fr["flat_rack_multiplier"], "0.0x", "特种箱一般为普通箱 1.5–2.5 倍，以货代报价为准", False),
+    ("frm", "该航线框架箱/开顶箱海运价 (US$/柜)", None, "$#,##0", "由下方框架箱运价表查得；直接在表中输入货代报价", False),
     ("loc", "起运港+目的港杂费 (US$/箱)", fr["local_charges_usd_per_box"], "$#,##0", "占位值：THC、文件、报关、短驳。用货代报价替换", True),
     ("ins", "保险（占运费比例）", fr["insurance_pct_of_freight"], "0%", "一般按货值投保，默认 0", False),
 ]
@@ -97,6 +95,17 @@ pa.cell(rt0, 3, fr["rates_source"] + " —— WCI 为 40 尺集装箱现货价�
 rate_row = int(P["rate"].split("$")[-1])
 pa[f"B{rate_row}"] = f"=INDEX($B${rt0}:$B${rt1},MATCH({P['route'].replace('参数!','')},$A${rt0}:$A${rt1},0))"
 pa[f"B{rate_row}"].number_format = "$#,##0"; pa[f"B{rate_row}"].border = BOX; pa[f"B{rate_row}"].font = F()
+r += 1
+pa.cell(r, 1, "框架箱/开顶箱海运价").font = BOLD; r += 1
+header(pa, r, ["航线", "US$ / 柜", "来源"]); r += 1
+ft0 = r
+for name in fr["rates_usd_per_40ft"]:
+    pa.cell(r, 1, name).font = F(); put(pa, f"B{r}", fr["flat_rack_rates_usd_per_40ft"][name], "$#,##0", BLUE, YEL); r += 1
+ft1 = r - 1
+pa.cell(ft0, 3, "直接输入货代的框架箱/开顶箱报价。默认为占位值（= 40HQ 现货价 × 2），报价前必须替换").font = NOTE
+frm_row = int(P["frm"].split("$")[-1])
+pa[f"B{frm_row}"] = f"=INDEX($B${ft0}:$B${ft1},MATCH({P['route'].replace('参数!','')},$A${ft0}:$A${ft1},0))"
+pa[f"B{frm_row}"].number_format = "$#,##0"; pa[f"B{frm_row}"].border = BOX; pa[f"B{frm_row}"].font = F()
 dv = DataValidation(type="list", formula1=f"=$A${rt0}:$A${rt1}"); pa.add_data_validation(dv)
 dv.add(P["route"].replace("参数!", "").replace("$", ""))
 dvb = DataValidation(type="list", formula1='"' + ",".join(BASIS_LABEL.values()) + '"'); pa.add_data_validation(dvb)
@@ -170,12 +179,12 @@ lines = [
     ("h_ele", "电工 公摊工时 – 所选口径 (h)", f"={LABOR_AREA}*{P['ratio_e']}", "#,##0", "", True, False),
     ("h_tot", "公摊工时合计 – 所选口径 (h)", "={c}{R[h_fit]}+{c}{R[h_ele]}", "#,##0", "工时，不是费用", True, True),
     ("packed", "装柜：包装后面积 (m²)", f"={{c}}{{R[fine]}}*{P['pack']}", "#,##0", "精细面积 × 包装系数", True, False),
-    ("bx_lo", "40HQ 箱数 – 低", f"=ROUNDUP({{c}}{{R[fine]}}*{P['flo']}*{P['pack']}/({P['cL']}*{P['cW']}*{P['uhi']}),0)", "0", "面积下限 + 乐观利用率", True, False),
+    ("bx_lo", "40HQ 箱数 – 低", f"=ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*{P['uhi']}),0)", "0", "乐观利用率", True, False),
     ("bx_mid", "40HQ 箱数 – 中", f"=ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*AVERAGE({P['ulo']},{P['uhi']})),0)", "0", "", True, True),
-    ("bx_hi", "40HQ 箱数 – 高", f"=ROUNDUP({{c}}{{R[fine]}}*{P['fhi']}*{P['pack']}/({P['cL']}*{P['cW']}*{P['ulo']}),0)", "0", "面积上限 + 保守利用率", True, False),
+    ("bx_hi", "40HQ 箱数 – 高", f"=ROUNDUP({{c}}{{R[packed]}}/({P['cL']}*{P['cW']}*{P['ulo']}),0)", "0", "保守利用率", True, False),
     ("frame", "   其中框架箱/开顶箱（中）", f"=ROUND({{c}}{{R[bx_mid]}}*{P['os']},0)", "0", "", True, False),
     ("c_box", "单箱费用 – 40HQ (US$)", f"={P['rate']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "海运价 + 保险 + 杂费", False, False),
-    ("c_frm", "单箱费用 – 框架箱 (US$)", f"={P['rate']}*{P['frm']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "", False, False),
+    ("c_frm", "单箱费用 – 框架箱 (US$)", f"={P['frm']}*(1+{P['ins']})+{P['loc']}", "$#,##0", "框架箱海运价 + 保险 + 杂费", False, False),
     ("fr_lo", "运费 – 低 (US$)", "={c}{R[bx_lo]}*((1-" + P["os"] + ")*{c}{R[c_box]}+" + P["os"] + "*{c}{R[c_frm]})", "$#,##0", "", True, False),
     ("fr_mid", "运费 – 中 (US$)", "=({c}{R[bx_mid]}-{c}{R[frame]})*{c}{R[c_box]}+{c}{R[frame]}*{c}{R[c_frm]}", "$#,##0", "", True, True),
     ("fr_hi", "运费 – 高 (US$)", "={c}{R[bx_hi]}*((1-" + P["os"] + ")*{c}{R[c_box]}+" + P["os"] + "*{c}{R[c_frm]})", "$#,##0", "", True, False),

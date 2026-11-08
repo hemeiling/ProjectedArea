@@ -126,6 +126,11 @@ details.params { margin-top: 14px; border: 1px solid var(--line); border-radius:
 details.params summary { cursor: pointer; font-weight: 600; color: var(--ink-2); }
 .param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px 16px; margin-top: 12px; }
 .param-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
+.param-help { color: var(--ink-3); font-size: 12px; line-height: 1.45; }
+.param-meta { color: var(--ink-3); font-size: 12px; }
+.param-meta.changed { color: var(--amber); font-weight: 600; }
+.param-meta.bad { color: var(--red); font-weight: 600; }
+.param-grid label.changed input, .param-grid label.changed select { border-color: var(--amber); background: var(--amber-soft); }
 
 .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 16px; }
 

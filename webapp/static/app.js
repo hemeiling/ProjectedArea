@@ -6,12 +6,12 @@
   const PARAM_KEYS = [
     "labor_area_basis", "fitter_hours_per_m2", "electrician_hours_per_m2", "packaging_factor",
     "floor_utilisation_low", "floor_utilisation_high",
-    "footprint_uncertainty_low", "footprint_uncertainty_high",
-    "oversize_share", "flat_rack_multiplier", "local_charges_usd_per_box", "insurance_pct_of_freight",
-    "route",
+    "oversize_share", "local_charges_usd_per_box", "insurance_pct_of_freight",
+    "route", "flat_rack_rate_usd",
   ];
-  // 旧任务保存的参数里只有一个公摊工时系数（报告中照原样显示）
-  const LEGACY_PARAM_KEYS = ["shared_hours_per_m2"];
+  // 旧任务保存的参数（报告中照原样显示）：只有一个公摊工时系数；面积误差系数；框架箱运价倍数
+  const LEGACY_PARAM_KEYS = ["shared_hours_per_m2", "footprint_uncertainty_low", "footprint_uncertainty_high",
+    "flat_rack_multiplier"];
   // 汇总表行：[key, 格式, 是否关键行, 合计列是否显示]；结果里没有的行不显示
   const SUMMARY_ROWS = [
     ["station_count", "int", false, true],
@@ -175,6 +175,10 @@
 
   function buildParamGrid(grid, values) {
     const v = Object.assign({}, state.meta.params, values || {});
+    if (values && !("flat_rack_rate_usd" in values)) {   // 旧任务存的是倍数：换算成该航线的框架箱运价
+      const r = state.meta.routes.find((x) => x.name === v.route);
+      if (r) v.flat_rack_rate_usd = "flat_rack_multiplier" in values ? r.usd_per_40ft * values.flat_rack_multiplier : r.flat_rack_usd;
+    }
     grid.textContent = "";
     for (const key of PARAM_KEYS) {
       const label = document.createElement("label");
@@ -206,8 +210,68 @@
         input.value = v[key];
       }
       input.name = key;
+      const range = (state.meta.param_ranges || {})[key];
+      if (range) { input.min = range[0]; input.max = range[1]; }
       label.appendChild(input);
+      // 每个参数下面写清楚：含义、影响什么、怎么填；再一行显示默认值 / 是否改过 / 是否超出范围
+      const help = document.createElement("small");
+      help.className = "param-help";
+      help.textContent = t(`help.${key}`);
+      const meta = document.createElement("small");
+      meta.className = "param-meta";
+      label.append(help, meta);
       grid.appendChild(label);
+    }
+    // 框架箱运价按航线取默认值：换航线时填入该航线的默认运价（仍可直接改）
+    const route = grid.querySelector("select[name=route]"), flat = grid.querySelector("input[name=flat_rack_rate_usd]");
+    route.addEventListener("change", () => {
+      const r = state.meta.routes.find((x) => x.name === route.value);
+      if (r) flat.value = r.flat_rack_usd;
+    });
+    grid.addEventListener("input", () => checkParams(grid));
+    grid.addEventListener("change", () => checkParams(grid));
+    checkParams(grid);
+  }
+
+  const SHARE_KEYS = ["floor_utilisation_low", "floor_utilisation_high", "oversize_share", "insurance_pct_of_freight"];
+  const USD_KEYS = ["local_charges_usd_per_box", "flat_rack_rate_usd"];
+
+  function paramDefault(grid, key) {
+    if (key !== "flat_rack_rate_usd") return state.meta.params[key];
+    const r = state.meta.routes.find((x) => x.name === grid.querySelector("select[name=route]").value);
+    return r ? r.flat_rack_usd : state.meta.params[key];
+  }
+
+  function paramText(key, v) {
+    if (key === "route") return v;
+    if (key === "labor_area_basis") return t(`basis.${v}`);
+    if (USD_KEYS.includes(key)) return usd(Number(v));
+    if (SHARE_KEYS.includes(key)) return `${v}（= ${num(Number(v) * 100, 0)}%）`;
+    return String(v);
+  }
+
+  // 标出改过的参数（黄色）和填错的参数（红色），避免误改；最终仍以后端校验为准
+  function checkParams(grid) {
+    const val = (name) => grid.querySelector(`[name=${name}]`);
+    const lo = val("floor_utilisation_low"), hi = val("floor_utilisation_high");
+    const crossed = lo.value !== "" && hi.value !== "" && Number(lo.value) > Number(hi.value);
+    for (const label of grid.querySelectorAll("label")) {
+      const input = label.querySelector("input, select"), meta = label.querySelector(".param-meta");
+      const key = input.name, d = paramDefault(grid, key), range = (state.meta.param_ranges || {})[key];
+      const isNum = input.tagName === "INPUT";
+      const value = isNum ? Number(input.value) : input.value;
+      let msg = "", bad = false;
+      if (isNum && input.value !== "" && (!Number.isFinite(value) || (range && (value < range[0] || value > range[1])))) {
+        bad = true; msg = t("params.outOfRange", { lo: range ? range[0] : "", hi: range ? range[1] : "" });
+      } else if (crossed && (input === lo || input === hi)) {
+        bad = true; msg = t("params.lowAboveHigh");
+      }
+      const changed = !bad && input.value !== "" && (isNum ? value !== Number(d) : value !== d);
+      input.classList.toggle("invalid", bad);
+      label.classList.toggle("changed", changed);
+      meta.classList.toggle("changed", changed);
+      meta.classList.toggle("bad", bad);
+      meta.textContent = msg || t(changed ? "params.changed" : "params.default", { v: paramText(key, d) });
     }
   }
 

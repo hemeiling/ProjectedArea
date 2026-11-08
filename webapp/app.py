@@ -223,11 +223,14 @@ def create_app(data_dir=None, desktop=False):
     def meta():
         cfg = J.load_base_config()
         fr = cfg["freight"]
+        k, lo, hi = estimate.FLAT_RACK_RATE
         return dict(ocr_available=J.ocr_available(), params=estimate.read_params(cfg),
+                    param_ranges={**{key: [a, b] for key, (_, a, b) in estimate.PARAMS.items()}, k: [lo, hi]},
                     labor_source=cfg["labor"].get("source", ""),
                     labor_area_basis_source=cfg["labor"].get("area_basis_source", ""),
                     labor_area_bases=list(estimate.LABOR_AREA_BASES),
-                    routes=[dict(name=k, usd_per_40ft=v) for k, v in fr["rates_usd_per_40ft"].items()],
+                    routes=[dict(name=k, usd_per_40ft=v, flat_rack_usd=fr["flat_rack_rates_usd_per_40ft"][k])
+                            for k, v in fr["rates_usd_per_40ft"].items()],
                     rates_source=fr["rates_source"], container=cfg["packing"]["container"],
                     limits=dict(max_drawings=MAX_DRAWINGS, max_file_mb=MAX_FILE_MB, max_dxf_mb=MAX_DXF_MB),
                     dxf_units=dxfinfo.UNIT_CHOICES_MM)

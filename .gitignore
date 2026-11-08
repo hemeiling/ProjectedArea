@@ -15,3 +15,5 @@ __pycache__/
 build/
 dist/
 vendor/
+tools/calc_doc/node_modules/
+tools/calc_doc/package-lock.json

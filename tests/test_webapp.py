@@ -115,15 +115,18 @@ def test_recalculate_rebuilds_workbook_without_remeasuring(client, layout_pdf):
     job = wait_for(client, submit(client, [layout_pdf], [REFERENCE_MM]).json()["job_id"])
     area = job["results"][0]["footprint_m2"]
     r = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {
-        "fitter_hours_per_m2": 1.0, "electrician_hours_per_m2": 0.5, "labor_area_basis": "fine", "route": "上海 → 纽约"}})
+        "fitter_hours_per_m2": 1.0, "electrician_hours_per_m2": 0.5, "labor_area_basis": "fine", "route": "上海 → 纽约",
+        "flat_rack_rate_usd": 15000}})
     assert r.status_code == 200
     e = r.json()["estimate"]["drawings"][0]
     assert e["labor_hours_fitter"] == pytest.approx(area) and e["labor_hours_electrician"] == pytest.approx(area * 0.5)
-    assert e["rate_usd_per_40ft"] == 9726
+    assert e["rate_usd_per_40ft"] == 9726 and e["cost_per_frame_usd"] == pytest.approx(15000 + 1500)
     assert r.json()["results"][0]["footprint_m2"] == area
     wb = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))
     assert (wb["参数"]["B4"].value, wb["参数"]["B5"].value, wb["参数"]["B6"].value) == (1.0, 0.5, "精细")
-    assert wb["参数"]["B17"].value == "上海 → 纽约"
+    assert wb["参数"]["B15"].value == "上海 → 纽约"
+    flat = [r[1] for r in wb["参数"].iter_rows(values_only=True) if r[0] == "上海 → 纽约"][-1]   # 框架箱运价表
+    assert flat == 15000
 
     bad = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"oversize_share": 5}})
     assert bad.status_code == 400 and bad.json()["error"]["code"] == "bad_params"
