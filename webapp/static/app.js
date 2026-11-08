@@ -6,12 +6,13 @@
   const PARAM_KEYS = [
     "labor_area_basis", "fitter_hours_per_m2", "electrician_hours_per_m2", "packaging_factor",
     "floor_utilisation_low", "floor_utilisation_high",
-    "oversize_share", "local_charges_usd_per_box", "insurance_pct_of_freight",
+    "local_charges_usd_per_box", "insurance_pct_of_freight",
     "route", "flat_rack_rate_usd",
   ];
-  // 旧任务保存的参数（报告中照原样显示）：只有一个公摊工时系数；面积误差系数；框架箱运价倍数
+  // 旧任务保存的参数（报告中照原样显示）：只有一个公摊工时系数；面积误差系数；框架箱运价倍数；
+  // 超限设备比例（表单已去掉：框架箱 / 开顶箱由人工按线填柜数，比例取默认 0）
   const LEGACY_PARAM_KEYS = ["shared_hours_per_m2", "footprint_uncertainty_low", "footprint_uncertainty_high",
-    "flat_rack_multiplier"];
+    "flat_rack_multiplier", "oversize_share"];
   // 汇总表行：[key, 格式, 是否关键行, 合计列是否显示]；结果里没有的行不显示
   const SUMMARY_ROWS = [
     ["station_count", "int", false, true],
@@ -206,7 +207,7 @@
         input.value = v.labor_area_basis;
       } else {
         input = document.createElement("input");
-        input.type = "number"; input.step = "any"; input.min = "0"; input.inputMode = "decimal";
+        input.type = "number"; input.step = PARAM_STEPS[key] || "any"; input.min = "0"; input.inputMode = "decimal";
         input.value = v[key];
       }
       input.name = key;
@@ -234,6 +235,12 @@
   }
 
   const SHARE_KEYS = ["floor_utilisation_low", "floor_utilisation_high", "oversize_share", "insurance_pct_of_freight"];
+  // 上下箭头每次改多少：比例每次 5 个百分点（保险 0.5 个），金额每次 100——不会一下从 0 跳到 1（= 100%）
+  const PARAM_STEPS = {
+    fitter_hours_per_m2: 0.01, electrician_hours_per_m2: 0.01, packaging_factor: 0.05,
+    floor_utilisation_low: 0.05, floor_utilisation_high: 0.05, oversize_share: 0.05, insurance_pct_of_freight: 0.005,
+    local_charges_usd_per_box: 100, flat_rack_rate_usd: 100,
+  };
   const USD_KEYS = ["local_charges_usd_per_box", "flat_rack_rate_usd"];
 
   function paramDefault(grid, key) {
@@ -271,7 +278,10 @@
       label.classList.toggle("changed", changed);
       meta.classList.toggle("changed", changed);
       meta.classList.toggle("bad", bad);
-      meta.textContent = msg || t(changed ? "params.changed" : "params.default", { v: paramText(key, d) });
+      // 比例类改过后同时显示现在是百分之几，避免把 15% 填成 15
+      meta.textContent = msg || (changed && SHARE_KEYS.includes(key)
+        ? t("params.changedShare", { now: `${+(value * 100).toFixed(1)}%`, v: paramText(key, d) })
+        : t(changed ? "params.changed" : "params.default", { v: paramText(key, d) }));
     }
   }
 

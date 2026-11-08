@@ -59,12 +59,12 @@ rows = [
     ("ratio_e", "电工 公摊工时系数（工时 / m²）", lb["electrician_hours_per_m2"], "0.00", "工时表中钳工、电工各算一次“面积 × 系数”", True),
     ("basis", "公摊工时面积口径", BASIS_LABEL[lb["area_basis"]], "@", "下拉选择：" + lb.get("area_basis_source", ""), True),
     ("装箱", None, None, None),
-    ("pack", "包装系数（包装后面积 / 投影面积）", pk["packaging_factor"], "0.00", "木箱每边约 +100 mm、加底托。建议用历史装柜数据反推", True),
+    ("pack", "包装系数（包装后面积 / 投影面积）", pk["packaging_factor"], "0.00", "木箱每边约 +120 mm（板厚约 100 mm + 间隙）、加底托。建议用历史装柜数据反推", True),
     ("cL", f"{pk['container']['name']} 内长 (m)", pk["container"]["inner_length_m"], "0.00", "40HQ 标准内尺寸 12.03 × 2.35 × 2.69 m，限重约 26.5 t", False),
     ("cW", f"{pk['container']['name']} 内宽 (m)", pk["container"]["inner_width_m"], "0.00", "", False),
     ("ulo", "地板利用率 – 保守", pk["floor_utilisation"]["low"], "0%", "设备不可堆叠、外形不规则、需绑扎空间", True),
     ("uhi", "地板利用率 – 乐观", pk["floor_utilisation"]["high"], "0%", "", True),
-    ("os", "超限设备比例（框架箱/开顶箱）", pk["oversize_share"], "0%", "宽 >2.35 m 或高 >2.6 m 的设备；PDF 无高度信息，需补充设备总图", True),
+    ("os", "超限设备比例（框架箱/开顶箱）", pk["oversize_share"], "0%", "默认 0：系统不自动安排框架箱/开顶箱。需要时由人工判断（设备宽 > 2.1 m 或高 > 2.3 m），在网页“修改参数并重新计算”里按线填柜数", True),
     ("运费", None, None, None),
     ("route", "目的航线", fr["route"], "@", "下拉选择", True),
     ("rate", "该航线海运价 (US$/40HQ)", None, "$#,##0", "由下方运价表查得，按每个 40HQ（40 尺高柜）计", False),
@@ -223,7 +223,7 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
     sm.cell(rr, N + 3, FRAME_NOTE if key == "frame" and FB else note).font = NOTE
 nr = 5 + len(lines) + 2
 sm[f"A{nr}"] = "说明：蓝字 = 输入/自动测量值；黄底 = 需校准的关键假设；橙底 = 关键结果。面积为规划级估算（约 ±10–15%），箱数与运费为 ±25%。"; sm[f"A{nr}"].font = NOTE
-sm[f"A{nr + 1}"] = "未包含：设备重量校核（PDF 无重量）、目的地内陆运输、关税、滞箱费。"; sm[f"A{nr + 1}"].font = NOTE
+sm[f"A{nr + 1}"] = "未包含：设备重量校核（PDF 无重量；业务规定原则上每柜总重不超过 22 吨）、目的地内陆运输、关税、滞箱费。"; sm[f"A{nr + 1}"].font = NOTE
 sm.freeze_panes = "B5"
 
 # ===================================================== 方法说明 + 图

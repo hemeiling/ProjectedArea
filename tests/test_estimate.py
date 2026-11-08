@@ -23,7 +23,7 @@ def drawing(footprint, lanes, stations=()):
 
 
 def test_101_matches_readme(cfg):
-    # README：101 基准 69.8×6.9 ≈ 482 m²，精细 216 m²；公摊工时（钳工+电工）501 → 225 h；箱数 14（12–16）；运费 ≈ US$77k
+    # README：101 基准 69.8×6.9 ≈ 482 m²，精细 216 m²；公摊工时（钳工+电工）501 → 225 h；箱数 11（10–12）；运费 ≈ US$60k
     e = estimate.summarize(drawing(215.9, [(69.8, 6.9)]), estimate.read_params(cfg), cfg)
     assert e["baseline_m2"] == pytest.approx(481.62)
     assert round(e["labor_hours_baseline"]) == 501 and round(e["labor_hours_fine"]) == 225
@@ -33,18 +33,19 @@ def test_101_matches_readme(cfg):
     assert e["labor_hours"] == pytest.approx(e["labor_hours_baseline"])
     # 低 / 高只换地板利用率（乐观 75% / 保守 55%），不再乘面积误差系数
     # 超限比例默认 0：是否走框架箱由人工按线填写，系统不自动安排
-    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (12, 14, 16, 0)
-    assert e["freight_mid_usd"] == pytest.approx(14 * (3997 + 1500))
+    # 地板利用率默认 0.75 / 0.88（唐总：保留两个值，取较高区间）
+    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (10, 11, 12, 0)
+    assert e["freight_mid_usd"] == pytest.approx(11 * (3997 + 1500))
 
 
 def test_102_matches_readme(cfg):
-    # README：102 基准 103.3×20.2 + 107.2×20.4 ≈ 4,274 m²，精细 1,519 m²；公摊工时（钳工+电工）4,444 → 1,579 h；箱数 96（83–113）
+    # README：102 基准 103.3×20.2 + 107.2×20.4 ≈ 4,274 m²，精细 1,519 m²；公摊工时（钳工+电工）4,444 → 1,579 h；箱数 76（71–83）
     stations = [dict(footprint_m2=1000.0), dict(footprint_m2=518.6)]
     e = estimate.summarize(drawing(1518.5, [(103.3, 20.2), (107.2, 20.4)], stations), estimate.read_params(cfg), cfg)
     assert e["fine_m2"] == pytest.approx(1518.6) and e["fine_source"] == "stations"
     assert round(e["baseline_m2"]) == 4274 and round(e["labor_hours_baseline"]) == 4444 and round(e["labor_hours_fine"]) == 1579
-    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"]) == (83, 96, 113)
-    assert round(e["freight_mid_usd"], -3) == 528000
+    assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"]) == (71, 76, 83)
+    assert round(e["freight_mid_usd"], -3) == 418000
 
 
 def test_fine_area_falls_back_to_footprint_without_stations(cfg):
@@ -126,12 +127,12 @@ def test_frame_boxes_entered_per_line(cfg):
     a, b = estimate.estimate(lines, p, cfg)["drawings"]
     per_box, per_frame = a["cost_per_box_usd"], a["cost_per_frame_usd"]
     assert (a["frame_source"], a["frame_boxes_mid"], a["frame_boxes_by_share"]) == ("count", 3, 1)
-    assert (a["boxes_low"], a["boxes_mid"], a["boxes_high"]) == (12, 14, 16)          # 柜数不变，只是其中 3 个是框架箱
-    assert a["freight_low_usd"] == pytest.approx(9 * per_box + 3 * per_frame)
-    assert a["freight_mid_usd"] == pytest.approx(11 * per_box + 3 * per_frame)
-    assert a["freight_high_usd"] == pytest.approx(13 * per_box + 3 * per_frame)
+    assert (a["boxes_low"], a["boxes_mid"], a["boxes_high"]) == (10, 11, 12)          # 柜数不变，只是其中 3 个是框架箱
+    assert a["freight_low_usd"] == pytest.approx(7 * per_box + 3 * per_frame)
+    assert a["freight_mid_usd"] == pytest.approx(8 * per_box + 3 * per_frame)
+    assert a["freight_high_usd"] == pytest.approx(9 * per_box + 3 * per_frame)
     assert (b["frame_source"], b["frame_boxes_mid"]) == ("share", 1)                     # 空着：按比例
-    assert b["freight_low_usd"] == pytest.approx(12 * (0.9 * per_box + 0.1 * per_frame))
+    assert b["freight_low_usd"] == pytest.approx(10 * (0.9 * per_box + 0.1 * per_frame))
 
 
 def test_frame_boxes_above_area_count_raise_the_total(cfg):
@@ -141,7 +142,7 @@ def test_frame_boxes_above_area_count_raise_the_total(cfg):
     assert (e["boxes_low"], e["boxes_mid"], e["boxes_high"], e["frame_boxes_mid"]) == (20, 20, 20, 20)
     assert e["freight_mid_usd"] == pytest.approx(20 * e["cost_per_frame_usd"])
     zero = estimate.summarize(drawing(215.9, [(69.8, 6.9)]), estimate.validate_params({"frame_boxes": {"X": 0}}, cfg), cfg)
-    assert zero["frame_boxes_mid"] == 0 and zero["freight_mid_usd"] == pytest.approx(14 * zero["cost_per_box_usd"])
+    assert zero["frame_boxes_mid"] == 0 and zero["freight_mid_usd"] == pytest.approx(11 * zero["cost_per_box_usd"])
 
 
 def test_frame_boxes_validation(cfg):
