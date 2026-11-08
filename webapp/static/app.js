@@ -187,7 +187,7 @@
         for (const r of state.meta.routes) {
           const o = document.createElement("option");
           o.value = r.name;
-          o.textContent = `${r.name}（US$ ${num(r.usd_per_40ft, 0)}/40ft）`;
+          o.textContent = `${r.name}（US$ ${num(r.usd_per_40ft, 0)}/40HQ）`;
           input.appendChild(o);
         }
         input.value = v.route;

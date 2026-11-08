@@ -69,7 +69,7 @@ rows = [
     ("os", "超限设备比例（框架箱/开顶箱）", pk["oversize_share"], "0%", "宽 >2.35 m 或高 >2.6 m 的设备；PDF 无高度信息，需补充设备总图", True),
     ("运费", None, None, None),
     ("route", "目的航线", fr["route"], "@", "下拉选择", True),
-    ("rate", "该航线海运价 (US$/40ft)", None, "$#,##0", "由下方运价表查得", False),
+    ("rate", "该航线海运价 (US$/40HQ)", None, "$#,##0", "由下方运价表查得，按每个 40HQ（40 尺高柜）计", False),
     ("frm", "框架箱运价倍数", fr["flat_rack_multiplier"], "0.0x", "特种箱一般为普通箱 1.5–2.5 倍，以货代报价为准", False),
     ("loc", "起运港+目的港杂费 (US$/箱)", fr["local_charges_usd_per_box"], "$#,##0", "占位值：THC、文件、报关、短驳。用货代报价替换", True),
     ("ins", "保险（占运费比例）", fr["insurance_pct_of_freight"], "0%", "一般按货值投保，默认 0", False),
@@ -88,12 +88,12 @@ for row in rows:
     P[key] = f"参数!$B${r}"; r += 1
 r += 1
 pa.cell(r, 1, "海运现货运价参考").font = BOLD; r += 1
-header(pa, r, ["航线", "US$ / 40ft", "来源"]); r += 1
+header(pa, r, ["航线", "US$ / 40HQ", "来源"]); r += 1
 rt0 = r
 for name, v in fr["rates_usd_per_40ft"].items():
     pa.cell(r, 1, name).font = F(); put(pa, f"B{r}", v, "$#,##0", BLUE); r += 1
 rt1 = r - 1
-pa.cell(rt0, 3, fr["rates_source"] + " —— 运价每周变化，报价前请更新").font = NOTE
+pa.cell(rt0, 3, fr["rates_source"] + " —— WCI 为 40 尺集装箱现货价，不区分 GP / HQ；运价每周变化，报价前请换成货代的 40HQ 报价").font = NOTE
 rate_row = int(P["rate"].split("$")[-1])
 pa[f"B{rate_row}"] = f"=INDEX($B${rt0}:$B${rt1},MATCH({P['route'].replace('参数!','')},$A${rt0}:$A${rt1},0))"
 pa[f"B{rate_row}"].number_format = "$#,##0"; pa[f"B{rate_row}"].border = BOX; pa[f"B{rate_row}"].font = F()
