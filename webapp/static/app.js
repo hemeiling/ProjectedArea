@@ -150,7 +150,11 @@
     renderOcrPill();
     if (state.meta) {
       buildParamGrid($("paramGrid"), readParams($("paramGrid")));
-      if (state.job) { buildParamGrid($("recalcGrid"), readParams($("recalcGrid"))); buildFrameGrid(state.job, readFrameBoxes()); }
+      if (state.job) {
+        buildParamGrid($("recalcGrid"), readParams($("recalcGrid")));
+        buildFrameGrid(state.job, readFrameBoxes());
+        buildPackGrid(state.job, readBlockPacking());
+      }
     }
     renderRows();
     renderLibrary();
@@ -360,6 +364,118 @@
 
   function readFrameBoxes() {
     return { ...(state.frames || {}) };
+  }
+
+  // 按图块类型的包装方式（可选，仅 DXF）：下拉选图块 + 可叠 2 层 / 自定义系数 + 添加；没添加的图块按默认包装系数
+  const PACK_SEP = "\u0001";
+  function buildPackGrid(job, values) {
+    const cols = ((job.estimate && job.estimate.drawings) || []).filter((c) => (c.block_groups || []).length);
+    state.packCols = cols;
+    state.packs = {};
+    for (const [did, blocks] of Object.entries(values || (job.params && job.params.block_packing) || {})) {
+      const col = cols.find((c) => String(c.id) === String(did));
+      for (const [key, v] of Object.entries(blocks || {})) {
+        if (col && col.block_groups.some((g) => g.key === key)) (state.packs[String(did)] ||= {})[key] = String(v);
+      }
+    }
+    // 旧版本算出的结果里还没有图块分组：DXF 任务提示先重新计算一次
+    state.packStale = cols.length === 0 && (job.results || []).some((r) => r.source === "dxf");
+    $("packBox").hidden = cols.length === 0 && !state.packStale;
+    renderPackGrid();
+  }
+
+  const packFactorOk = (v) => { const n = Number(v); return v !== "" && Number.isFinite(n) && n >= 0.05 && n <= 5; };
+  const blockLabel = (g) => g.block || t("pack.loose", { h: g.key.split(":").slice(1).join(":") });
+  const blockInfo = (g) => t("pack.item", { n: g.count, a: num(g.area_m2, 1) });
+
+  function packChoice(value, onChange) {
+    // 方式下拉 + 自定义系数输入框；value: "stack2" 或数字字符串
+    const mode = document.createElement("select");
+    mode.setAttribute("aria-label", t("pack.mode"));
+    mode.innerHTML = `<option value="stack2">${esc(t("pack.stack2"))}</option><option value="custom">${esc(t("pack.custom"))}</option>`;
+    const factor = document.createElement("input");
+    factor.type = "number"; factor.min = "0.05"; factor.max = "5"; factor.step = "0.05"; factor.inputMode = "decimal";
+    factor.placeholder = t("pack.factor"); factor.setAttribute("aria-label", t("pack.factor"));
+    mode.value = value === "stack2" || value === "" ? "stack2" : "custom";
+    factor.value = mode.value === "custom" ? value : "";
+    const sync = () => {
+      factor.hidden = mode.value !== "custom";
+      factor.classList.toggle("invalid", mode.value === "custom" && factor.value !== "" && !packFactorOk(factor.value));
+      onChange(mode.value === "stack2" ? "stack2" : factor.value);
+    };
+    mode.addEventListener("change", sync);
+    factor.addEventListener("input", sync);
+    factor.hidden = mode.value !== "custom";
+    return [mode, factor];
+  }
+
+  function renderPackGrid() {
+    const grid = $("packGrid");
+    grid.textContent = "";
+    if (state.packStale) {
+      const p = document.createElement("p");
+      p.className = "note"; p.textContent = t("pack.stale");
+      grid.appendChild(p);
+      return;
+    }
+    let any = false;
+    for (const col of state.packCols) {
+      for (const [key, value] of Object.entries(state.packs[String(col.id)] || {})) {
+        const g = col.block_groups.find((x) => x.key === key);
+        if (!g) continue;
+        any = true;
+        const row = document.createElement("div");
+        row.className = "frame-row";
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = `${col.name} · ${blockLabel(g)} · ${blockInfo(g)}`;
+        const [mode, factor] = packChoice(value, (v) => { state.packs[String(col.id)][key] = v; });
+        const del = document.createElement("button");
+        del.type = "button"; del.className = "link"; del.textContent = t("frame.remove");
+        del.addEventListener("click", () => {
+          delete state.packs[String(col.id)][key];
+          if (!Object.keys(state.packs[String(col.id)]).length) delete state.packs[String(col.id)];
+          renderPackGrid();
+        });
+        row.append(name, mode, factor, del);
+        grid.appendChild(row);
+      }
+    }
+    if (!any) {
+      const none = document.createElement("p");
+      none.className = "note"; none.textContent = t("pack.none");
+      grid.appendChild(none);
+    }
+    // 添加一行：图块下拉按图纸分组，只列还没添加的图块（按面积从大到小）
+    const row = document.createElement("div");
+    row.className = "frame-row frame-add";
+    const pick = document.createElement("select");
+    pick.setAttribute("aria-label", t("pack.pick"));
+    pick.innerHTML = `<option value="">${esc(t("pack.pick"))}</option>` + state.packCols.map((col) => {
+      const opts = col.block_groups.filter((g) => !((state.packs[String(col.id)] || {})[g.key] !== undefined))
+        .map((g) => `<option value="${esc(String(col.id) + PACK_SEP + g.key)}">${esc(`${blockLabel(g)} · ${blockInfo(g)}`)}</option>`).join("");
+      return opts ? `<optgroup label="${esc(col.name)}">${opts}</optgroup>` : "";
+    }).join("");
+    let choice = "stack2";
+    const add = document.createElement("button");
+    add.type = "button"; add.textContent = t("frame.add");
+    const ready = () => { add.disabled = !(pick.value && (choice === "stack2" || packFactorOk(choice))); };
+    const [mode, factor] = packChoice("stack2", (v) => { choice = v; ready(); });
+    pick.addEventListener("change", ready);
+    add.addEventListener("click", () => {
+      const [did, key] = pick.value.split(PACK_SEP);
+      (state.packs[did] ||= {})[key] = choice;
+      renderPackGrid();
+    });
+    ready();
+    row.append(pick, mode, factor, add);
+    grid.appendChild(row);
+  }
+
+  function readBlockPacking() {
+    const out = {};
+    for (const [did, blocks] of Object.entries(state.packs || {})) out[did] = { ...blocks };
+    return out;
   }
 
   function readParams(grid) {
@@ -638,6 +754,7 @@
       state.job = body;
       buildParamGrid($("recalcGrid"), body.params);
       buildFrameGrid(body);
+      buildPackGrid(body);
       $("recalcMsg").textContent = ""; $("recalcError").textContent = "";
       renderJob(body);
       loadRecent();
@@ -657,7 +774,7 @@
       state.job = body;
       renderJob(body);
       if (isRunning()) state.pollTimer = setTimeout(() => poll(id), POLL_MS);
-      else { buildParamGrid($("recalcGrid"), body.params); buildFrameGrid(body); loadRecent(); loadLibrary(); loadSystem(); }
+      else { buildParamGrid($("recalcGrid"), body.params); buildFrameGrid(body); buildPackGrid(body); loadRecent(); loadLibrary(); loadSystem(); }
     } catch (_) {
       state.pollFailures += 1;
       if (state.pollFailures >= 3) $("progressText").textContent = t("err.network");
@@ -794,7 +911,8 @@
       html += `<tr class="${isKey ? "key" : ""}"><td>${esc(label)}</td>`;
       for (const c of cols) {
         const src = key === "fine_m2" && c.fine_source === "footprint" ? `<span class="src">${esc(t("fine.fromFootprint"))}</span>`
-          : key === "frame_boxes_mid" && c.frame_source === "count" ? `<span class="src">${esc(t("frame.fromCount"))}</span>` : "";
+          : key === "frame_boxes_mid" && c.frame_source === "count" ? `<span class="src">${esc(t("frame.fromCount"))}</span>`
+          : key === "packed_m2" && c.packing_source === "blocks" ? `<span class="src">${esc(t("pack.fromBlocks"))}</span>` : "";
         html += `<td class="num">${fmt(c[key], kind)}${src}</td>`;
       }
       if (cols.length > 1) html += `<td class="num">${hasTotal ? fmt(tot[key], kind) : ""}</td>`;
@@ -1021,13 +1139,14 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
     try {
       const res = await fetch(`/api/jobs/${state.job.id}/estimate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ params: { ...readParams($("recalcGrid")), frame_boxes: readFrameBoxes() } }),
+        body: JSON.stringify({ params: { ...readParams($("recalcGrid")), frame_boxes: readFrameBoxes(), block_packing: readBlockPacking() } }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) { $("recalcError").textContent = say(body.error) || `HTTP ${res.status}`; return; }
       state.job = body;
       renderJob(body);
       buildFrameGrid(body);
+      buildPackGrid(body);
       $("recalcMsg").textContent = t("recalc.done");
     } catch (_) {
       $("recalcError").textContent = t("err.network");

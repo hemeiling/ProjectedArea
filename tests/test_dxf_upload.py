@@ -74,6 +74,16 @@ def test_dxf_with_declared_units_end_to_end(client_dir, tmp_path):
     assert lib[0]["kind"] == "dxf" and lib[0]["sha256"] == sha256_bytes(data) and lib[0]["unit_source"] == "file"
     assert staged_files(client) == []
 
+    # 按图块类型的包装方式：全部 MACHINE 可叠 2 层 → 包装后面积减半；Excel 多出『图块包装』页
+    (g,) = e["block_groups"]
+    assert (g["key"], g["count"]) == ("MACHINE", MACHINES) and g["area_m2"] == pytest.approx(res["footprint_m2"])
+    r = client.post(f"/api/jobs/{job['id']}/estimate", json={"params": {"block_packing": {d["id"]: {"MACHINE": "stack2"}}}})
+    assert r.status_code == 200, r.text
+    e2 = r.json()["estimate"]["drawings"][0]
+    assert e2["packing_source"] == "blocks" and e2["packed_m2"] == pytest.approx(e["packed_m2"] / 2)
+    wb = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))
+    assert "图块包装" in wb.sheetnames and wb["图块包装"]["B5"].value == "MACHINE" and wb["图块包装"]["E5"].value == "可叠 2 层"
+
 
 def test_undeclared_units_ask_then_remember(client_dir, tmp_path):
     client = client_dir

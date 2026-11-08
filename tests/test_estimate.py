@@ -152,3 +152,38 @@ def test_frame_boxes_validation(cfg):
             estimate.validate_params(bad, cfg)
     out = estimate.apply_params(cfg, estimate.validate_params({"frame_boxes": {"101": 2}}, cfg))
     assert out["packing"]["frame_boxes"] == {"101": 2} and "frame_boxes" not in cfg["packing"]
+
+
+def dxf_drawing(footprint, inserts):
+    return dict(drawing(footprint, [(20, 10)]), inserts=[
+        dict(handle=h, block=b, cls=c, area_m2=a) for h, b, c, a in inserts])
+
+
+def test_block_groups_split_overlap_by_gross_area():
+    # 同一图块的插入合成一组；打散的设备线条每团一组；重叠按毛面积比例分摊，各组之和 = 投影面积
+    d = dxf_drawing(90.0, [("1", "A", "equipment", 40.0), ("2", "A", "equipment", 20.0), ("3", "B", "equipment", 30.0),
+                           ("loose-1", None, "equipment", 10.0), ("4", "C", "mobile", 50.0), ("5", "D", "excluded", 5.0)])
+    g = {x["key"]: x for x in estimate.block_groups(d)}
+    assert set(g) == {"A", "B", "loose:loose-1"}                      # 移动设备、排除的图块不参与
+    assert (g["A"]["count"], g["A"]["gross_m2"]) == (2, 60.0)
+    assert g["A"]["area_m2"] == pytest.approx(54.0) and g["B"]["area_m2"] == pytest.approx(27.0)
+    assert sum(x["area_m2"] for x in g.values()) == pytest.approx(90.0)
+    assert estimate.block_groups(dict(d, stations=[dict(footprint_m2=90.0)])) == []   # PDF 按工位分摊时不分图块
+
+
+def test_block_packing_stack2_and_custom_factor(cfg):
+    d = dict(dxf_drawing(90.0, [("1", "A", "equipment", 60.0), ("2", "B", "equipment", 40.0)]), id="103")
+    base = estimate.summarize(d, estimate.read_params(cfg), cfg)
+    pack = cfg["packing"]["packaging_factor"]
+    assert base["packed_m2"] == pytest.approx(90.0 * pack) and base["packing_source"] == "uniform"
+    p = estimate.validate_params({"block_packing": {"103": {"A": "stack2", "B": "0.4"}}}, cfg)
+    e = estimate.summarize(d, p, cfg)
+    # A 分摊 54 m²，可叠 2 层 → 系数减半；B 分摊 36 m²，系数 0.4
+    assert e["packed_m2"] == pytest.approx(54.0 * pack / 2 + 36.0 * 0.4) and e["packing_source"] == "blocks"
+    assert {g["key"]: g["choice"] for g in e["block_groups"]} == {"A": "stack2", "B": "custom"}
+    other = estimate.summarize(dict(d, id="104"), p, cfg)           # 别的图纸不受影响
+    assert other["packed_m2"] == pytest.approx(90.0 * pack)
+    for bad in ({"block_packing": {"103": {"A": "0.01"}}}, {"block_packing": {"103": {"A": "abc"}}},
+                {"block_packing": {"103": "stack2"}}, {"block_packing": ["A"]}):
+        with pytest.raises(ValueError):
+            estimate.validate_params(bad, cfg)

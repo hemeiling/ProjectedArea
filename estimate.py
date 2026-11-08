@@ -24,6 +24,10 @@ PARAMS = {
 FLAT_RACK_RATE = ("flat_rack_rate_usd", 0.0, 1e6)
 # 按线直接填写的框架箱/开顶箱柜数：{图纸 id: 柜数}；填了就不再按超限比例（业务输入，图纸不决定）
 MAX_FRAME_BOXES = 10000
+# 按图块类型指定的包装方式：{图纸 id: {图块: "stack2" 或包装系数}}。能否叠放由人工判断（图纸里没有高度）；
+# "stack2" = 可叠 2 层，该类设备的包装系数取默认包装系数的一半；数字 = 直接给该类设备的包装系数
+STACK2 = "stack2"
+BLOCK_FACTOR_RANGE = (0.05, 5.0)
 # 公摊工时按哪种面积计算（业务决定，图纸不决定）：基准 = 产线总长×宽，精细 = 各工位投影面积之和
 LABOR_AREA_BASES = ("baseline", "fine")
 
@@ -47,6 +51,7 @@ def read_params(cfg):
     p["route"] = cfg["freight"]["route"]
     p["flat_rack_rate_usd"] = cfg["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]]
     p["frame_boxes"] = {}
+    p["block_packing"] = {}
     return p
 
 
@@ -81,7 +86,49 @@ def validate_params(raw, cfg):
     if p["floor_utilisation_low"] > p["floor_utilisation_high"]:
         raise ValueError("保守利用率不能高于乐观利用率 / Conservative utilisation exceeds optimistic")
     p["frame_boxes"] = _frame_boxes(raw.get("frame_boxes"))
+    p["block_packing"] = _block_packing(raw.get("block_packing"))
     return p
+
+
+def _block_packing(raw):
+    """{图纸 id: {图块: "stack2" 或包装系数}}；空值表示该图块按默认包装系数"""
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(v, dict) for v in raw.values()):
+        raise ValueError("图块包装格式错误 / block_packing must map drawing id to {block: choice}")
+    out = {}
+    for did, blocks in raw.items():
+        for key, v in blocks.items():
+            if v in (None, ""):
+                continue
+            out.setdefault(str(did), {})[str(key)] = STACK2 if v == STACK2 else _number({key: v}, key, *BLOCK_FACTOR_RANGE)
+    return out
+
+
+def block_groups(drawing):
+    """DXF：计入的设备按图块类型分组（打散的设备线条每团单独一组），按毛面积从大到小排列。
+
+    各图块轮廓之间有重叠（投影面积是并集），重叠部分按毛面积比例分摊，使各组面积之和 = 投影面积。
+    PDF（没有图块，或已按工位分摊）返回 []。
+    """
+    if drawing.get("stations"):
+        return []
+    groups = {}
+    for i in drawing.get("inserts") or []:
+        if i.get("cls") != "equipment" or not i.get("area_m2"):
+            continue
+        key = i["block"] if i.get("block") else f"loose:{i['handle']}"
+        g = groups.setdefault(key, dict(key=key, block=i.get("block"), count=0, gross_m2=0.0))
+        g["count"] += 1
+        g["gross_m2"] += i["area_m2"]
+    gross = sum(g["gross_m2"] for g in groups.values())
+    if not gross:
+        return []
+    share = drawing["footprint_m2"] / gross
+    out = sorted(groups.values(), key=lambda g: -g["gross_m2"])
+    for g in out:
+        g["area_m2"] = g["gross_m2"] * share
+    return out
 
 
 def _frame_boxes(raw):
@@ -110,6 +157,7 @@ def apply_params(cfg, p):
     out["freight"]["route"] = p["route"]
     out["freight"]["flat_rack_rates_usd_per_40ft"][p["route"]] = p["flat_rack_rate_usd"]
     out["packing"]["frame_boxes"] = dict(p.get("frame_boxes") or {})
+    out["packing"]["block_packing"] = {k: dict(v) for k, v in (p.get("block_packing") or {}).items()}
     return out
 
 
@@ -138,7 +186,18 @@ def summarize(drawing, p, cfg):
     floor = c["inner_length_m"] * c["inner_width_m"]
     ulo, uhi = p["floor_utilisation_low"], p["floor_utilisation_high"]
     pack, os_ = p["packaging_factor"], p["oversize_share"]
-    packed = fine * pack
+    # 包装后面积：默认整图按同一包装系数；人工指定了包装方式的图块类型按各自的系数（例如可叠 2 层的减半）
+    groups = block_groups(drawing)
+    chosen = (p.get("block_packing") or {}).get(str(drawing["id"]), {})
+    special_area = special_packed = 0.0
+    for g in groups:
+        c_ = chosen.get(g["key"])
+        g["choice"] = "default" if c_ is None else ("stack2" if c_ == STACK2 else "custom")
+        g["factor"] = pack if c_ is None else (pack / 2 if c_ == STACK2 else c_)
+        if c_ is not None:
+            special_area += g["area_m2"]
+            special_packed += g["area_m2"] * g["factor"]
+    packed = (fine - special_area) * pack + special_packed
     boxes_low = _roundup(packed / (floor * uhi))           # 乐观利用率
     boxes_mid = _roundup(packed / (floor * (ulo + uhi) / 2))
     boxes_high = _roundup(packed / (floor * ulo))          # 保守利用率
@@ -173,6 +232,8 @@ def summarize(drawing, p, cfg):
         labor_hours_electrician=labor_area * re_,
         labor_hours=labor_area * (rf + re_),
         packed_m2=packed,
+        packing_source="blocks" if special_area else "uniform",
+        block_groups=groups,
         boxes_low=boxes_low, boxes_mid=boxes_mid, boxes_high=boxes_high,
         frame_boxes_mid=frame_mid, frame_boxes_by_share=frame_by_share,
         frame_source="share" if count is None else "count",

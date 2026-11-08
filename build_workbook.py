@@ -14,6 +14,8 @@ from openpyxl.drawing.image import Image as XImg
 from openpyxl.worksheet.datavalidation import DataValidation
 from PIL import Image
 
+import estimate     # 与网页同一套分组与系数（图块包装）
+
 cfg_path, res_path, out = sys.argv[1:4]
 cfg = yaml.safe_load(open(cfg_path, encoding="utf-8"))
 res = json.load(open(res_path, encoding="utf-8"))
@@ -152,6 +154,38 @@ for d in D:
 ln_last = r - 1
 for c, w in zip("ABCDEFG", [10, 10, 12, 12, 16, 22, 12]): ln.column_dimensions[c].width = w
 
+# ===================================================== 图块包装（只在人工指定了图块包装方式时生成）
+BP = {str(d["id"]): (pk.get("block_packing") or {}).get(str(d["id"])) for d in D}
+BP = {k: v for k, v in BP.items() if v}
+bp_last = 4
+if BP:
+    bp = wb.create_sheet("图块包装", 2)
+    bp["A1"] = "按图块类型指定的包装方式（能否叠放由人工判断，图纸里没有设备高度）"; bp["A1"].font = F(bold=True, size=13)
+    bp["A2"] = ("可叠 2 层 = 该类设备的包装系数取『参数』页包装系数的一半；自定义 = 直接给出该类设备的包装系数；未列出的图块按『参数』页的包装系数。"
+                "分摊面积：各图块轮廓之间有重叠，重叠部分按毛面积比例分摊，各图块面积之和 = 投影面积。"); bp["A2"].font = NOTE
+    header(bp, 4, ["图纸", "图块", "数量", "分摊面积 (m²)", "方式", "包装系数", "包装后面积 (m²)"])
+    r = 5
+    for d in D:
+        chosen = BP.get(str(d["id"]))
+        if not chosen:
+            continue
+        for g in estimate.block_groups(d):
+            if g["key"] not in chosen:
+                continue
+            v = chosen[g["key"]]
+            put(bp, f"A{r}", str(d["id"]), "@")
+            put(bp, f"B{r}", g["block"] or f"散线设备 {g['key'].split(':', 1)[1]}")
+            put(bp, f"C{r}", g["count"], "0")
+            put(bp, f"D{r}", round(g["area_m2"], 2), "#,##0.0", BLUE)
+            put(bp, f"E{r}", "可叠 2 层" if v == estimate.STACK2 else "自定义")
+            if v == estimate.STACK2:
+                put(bp, f"F{r}", f"={P['pack']}/2", "0.00")
+            else:
+                put(bp, f"F{r}", v, "0.00", BLUE, YEL)
+            put(bp, f"G{r}", f"=D{r}*F{r}", "#,##0.0"); r += 1
+    bp_last = r - 1
+    for c, w in zip("ABCDEFG", [10, 34, 8, 16, 12, 12, 18]): bp.column_dimensions[c].width = w
+
 # ===================================================== 汇总
 sm = wb.create_sheet("汇总", 0)
 sm.column_dimensions["A"].width = 44
@@ -211,8 +245,12 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
             put(sm, f"{c}{rr}", FB[str(d["id"])], fmt, BLUE, YEL)        # 人工填写的柜数
             continue
         mmpt = f"DXF：1 单位 = {d['unit_mm']:g} mm" if d.get("source") == "dxf" else d["mm_per_pt"]
-        v = (ALT[key] if own and key in ALT else f).format(
-            c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"])
+        if key == "packed" and str(d["id"]) in BP:      # 部分图块按各自的包装系数
+            f_ = ("=({c}{R[fine]}-SUMIF('图块包装'!$A$5:$A${bp_last},{c}5,'图块包装'!$D$5:$D${bp_last}))*" + P["pack"]
+                  + "+SUMIF('图块包装'!$A$5:$A${bp_last},{c}5,'图块包装'!$G$5:$G${bp_last})")
+        else:
+            f_ = ALT[key] if own and key in ALT else f
+        v = f_.format(c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"], bp_last=bp_last)
         if v.replace(".", "").isdigit():
             v = float(v) if "." in v else v
         cell = put(sm, f"{c}{rr}", v, fmt, BOLD if hi else F(), KEY if hi else None)
@@ -220,7 +258,10 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
         put(sm, f"{TOT}{rr}", f"=SUM(B{rr}:{CL(N + 1)}{rr})", fmt, BOLD if hi else F(), KEY if hi else None)
     elif key == "ratio":
         put(sm, f"{TOT}{rr}", f"=IF({TOT}{R['base']}=0,\"-\",{TOT}{R['fine']}/{TOT}{R['base']})", fmt)
-    sm.cell(rr, N + 3, FRAME_NOTE if key == "frame" and FB else note).font = NOTE
+    note_ = FRAME_NOTE if key == "frame" and FB else note
+    if key == "packed" and BP:
+        note_ = "精细面积 × 包装系数；" + "、".join(BP) + " 中人工指定了包装方式的图块按『图块包装』页的系数"
+    sm.cell(rr, N + 3, note_).font = NOTE
 nr = 5 + len(lines) + 2
 sm[f"A{nr}"] = "说明：蓝字 = 输入/自动测量值；黄底 = 需校准的关键假设；橙底 = 关键结果。面积为规划级估算（约 ±10–15%），箱数与运费为 ±25%。"; sm[f"A{nr}"].font = NOTE
 sm[f"A{nr + 1}"] = "未包含：设备重量校核（PDF 无重量；业务规定原则上每柜总重不超过 22 吨）、目的地内陆运输、关税、滞箱费。"; sm[f"A{nr + 1}"].font = NOTE
@@ -259,6 +300,6 @@ for d in D:
         img = XImg(p); h = 640; img.height = h; img.width = int(im.width * h / im.height)
         me.add_image(img, f"A{row + 1}"); row += 35
 
-wb._sheets = [wb["汇总"], wb["工位明细"], wb["线体基准（总长×宽）"], wb["参数"], wb["方法说明"]]
+wb._sheets = [wb["汇总"], wb["工位明细"], wb["线体基准（总长×宽）"]] + ([wb["图块包装"]] if BP else []) + [wb["参数"], wb["方法说明"]]
 wb.save(out)
 print("saved", out)
