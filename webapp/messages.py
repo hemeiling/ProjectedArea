@@ -105,6 +105,12 @@ MESSAGES = {
     "edit_not_found": (
         "没有找到这条修正（可能已经撤销）。",
         "Correction not found (it may already be withdrawn)."),
+    "device_not_editable": (
+        "这张图的测量结果没有逐台设备的轮廓，不能点选设备改判：新建一次计算（重新测量）即可。",
+        "This measurement has no per-device outlines, so devices cannot be switched on or off: start a new estimate to measure again."),
+    "device_bad": (
+        "设备改判无效：{detail}",
+        "Invalid device change: {detail}"),
 
     "dimension_needed": (
         "缺少标注总尺寸：{names}。比例尺只能来自图上的标注数字（PDF 中的文字是图形，无法直接读取）。"

@@ -420,6 +420,7 @@
       <div class="viewer-scroll"><div class="viewer-stage">
         <img src="${esc(d.overlay_url)}" alt="${esc(t("drawing.overlayDxf"))}">
         <svg class="viewer-svg" xmlns="${SVG_NS}" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <div class="viewer-pop" hidden></div>
       </div></div>
       <div class="draw-ctl" hidden>
         <span class="draw-hint"></span>
@@ -436,8 +437,9 @@
     if (stale) table = `<p class="note">${esc(t("pack.stale"))}</p>`;
     else if (groups.length) {
       const set = Object.keys(state.packs[String(d.id)] || {}).length;
-      table = `<details class="block-table"${(state.view[d.id] || {}).tableOpen ? " open" : ""}>
-        <summary>${esc(t("blocks.title", { n: groups.filter((g) => g.key !== "manual:add").length, k: set }))}</summary>
+      table = `<aside class="viewer-side block-table">
+        <h4>${esc(t("blocks.title", { n: groups.filter((g) => g.key !== "manual:add").length, k: set }))}</h4>
+        <p class="result-strip"></p>
         <p class="note">${esc(t("pack.note"))}</p>
         <div class="table-wrap block-scroll"><table class="blocks"><thead><tr>
           <th class="num">${esc(t("blocks.no"))}</th><th>${esc(t("blocks.name"))}</th><th class="num">${esc(t("blocks.count"))}</th>
@@ -445,9 +447,9 @@
         </tr></thead><tbody></tbody></table></div>
         <div class="actions"><button type="button" class="primary" data-act="apply">${esc(t("blocks.apply"))}</button>
           <span class="ok block-msg" role="status"></span></div>
-      </details>`;
+      </aside>`;
     }
-    return `<div class="viewer" data-did="${id}">${tools}${table}</div>`;
+    return `<div class="viewer" data-did="${id}"><div class="viewer-main">${tools}</div>${table}</div>`;
   }
 
   function wireViewers(job) {
@@ -455,10 +457,9 @@
       const did = el.dataset.did;
       const d = (job.results || []).find((r) => String(r.id) === did);
       const col = ((job.estimate && job.estimate.drawings) || []).find((c) => String(c.id) === did);
-      const v = (state.view[did] ||= { zoom: 1, labels: true, tableOpen: false, hover: null });
+      const v = (state.view[did] ||= { zoom: 1, labels: true, hover: null, pop: null });
+      v.pop = null;
       renderBlockRows(el, did, col);
-      const details = el.querySelector("details.block-table");
-      if (details) details.addEventListener("toggle", () => { v.tableOpen = details.open; });
       const apply = el.querySelector('[data-act="apply"]');
       if (apply) {
         apply.addEventListener("click", async () => {
@@ -488,6 +489,8 @@
     if (!body || !col) return;
     const groups = col.block_groups || [];
     const measured = groups.reduce((s, g) => s + (g.measured_m2 ?? g.gross_m2 ?? 0), 0) || 1;
+    const strip = el.querySelector(".result-strip");
+    if (strip) strip.textContent = t("blocks.result", { mid: num(col.boxes_mid, 0), lo: num(col.boxes_low, 0), hi: num(col.boxes_high, 0), a: num(col.packed_m2, 1) });
     const pack = Number(((state.job.estimate || {}).params || {}).packaging_factor) || 1;
     let cum = 0;
     body.textContent = "";
@@ -570,8 +573,10 @@
         drawViewer(el, did);
         return;
       }
-      const hit = ev.target.closest("[data-key]");
-      if (hit) focusBlockRow(el, did, hit.dataset.key);
+      if (ev.target.closest(".lbl")) { focusBlockRow(el, did, ev.target.closest(".lbl").dataset.key); return; }
+      const dev = ev.target.closest("[data-h]");
+      if (dev && v.geo.devices_editable) { v.pop = { handle: dev.dataset.h, at: svgPoint(svg, ev) }; renderPop(el, did); }
+      else { v.pop = null; renderPop(el, did); }
     });
     svg.addEventListener("dblclick", (ev) => { if (state.draw && state.draw.did === did) { ev.preventDefault(); finishDraw(el, did); } });
     svg.addEventListener("mousemove", (ev) => {
@@ -652,9 +657,13 @@
     const box = el.querySelector(".manual-box");
     const m = d.manual;
     const head = m
-      ? `<p><b>${esc(t("manual.formula", { m: num(m.measured_m2, 1), a: num(m.added_m2, 1), c: num(m.cut_m2, 1), r: num(m.adjusted_m2, 1) }))}</b></p>`
+      ? `<p><b>${esc(t("manual.formula", { m: num(m.measured_m2, 1), x: num(m.device_removed_m2 || 0, 1), y: num(m.device_added_m2 || 0, 1), a: num(m.added_m2, 1), c: num(m.cut_m2, 1), r: num(m.adjusted_m2, 1) }))}</b></p>`
       : `<p class="note">${esc(t("manual.none"))}</p>`;
-    const items = geo.edits.map((e) => `<li data-eid="${esc(e.id)}"><span class="tag ${e.op === "add" ? "warn" : "bad"}">${esc(t(e.op === "add" ? "manual.add" : "manual.cut"))}</span>
+    const devItems = (geo.devices || []).map((e) => `<li data-eid="${esc(e.id)}"><span class="tag ${e.op === "include" ? "warn" : "bad"}">${esc(t(e.op === "include" ? "dev.tagIn" : e.scope === "block" ? "dev.tagOutBlock" : "dev.tagOut"))}</span>
+      ${esc(e.block || t("pack.loose", { h: e.handle }))} · ${esc(t("dev.item", { n: e.n_devices ?? 0, e: num(e.effect_m2 || 0, 1) }))}${e.status && e.status !== "applied" ? ` · <b class="amber">${esc(t("dev.unmatched"))}</b>` : ""}${e.note ? ` · ${esc(e.note)}` : ""}
+      <span class="muted">· ${esc(when(e.created_at))}</span>
+      <button type="button" class="link" data-act="withdraw">${esc(t("manual.withdraw"))}</button></li>`).join("");
+    const items = devItems + geo.edits.map((e) => `<li data-eid="${esc(e.id)}"><span class="tag ${e.op === "add" ? "warn" : "bad"}">${esc(t(e.op === "add" ? "manual.add" : "manual.cut"))}</span>
       ${esc(t("manual.item", { a: num(e.area_m2, 1), e: num(e.effect_m2, 1) }))}${e.note ? ` · ${esc(e.note)}` : ""}
       <span class="muted">· ${esc(when(e.created_at))}</span>
       <button type="button" class="link" data-act="withdraw">${esc(t("manual.withdraw"))}</button></li>`).join("");
@@ -675,11 +684,9 @@
   }
 
   function focusBlockRow(el, did, key) {
-    const details = el.querySelector("details.block-table");
-    if (!details) return;
-    details.open = true;
-    (state.view[did] || {}).tableOpen = true;
-    const tr = [...details.querySelectorAll("tr[data-key]")].find((r) => r.dataset.key === key);
+    const side = el.querySelector(".block-table");
+    if (!side) return;
+    const tr = [...side.querySelectorAll("tr[data-key]")].find((r) => r.dataset.key === key);
     if (!tr) return;
     tr.scrollIntoView({ block: "nearest" });
     tr.classList.remove("flash"); void tr.offsetWidth; tr.classList.add("flash");
@@ -701,10 +708,93 @@
   }
   const ringArea = (ring) => Math.abs(ring.reduce((s, p, i) => { const q = ring[(i + 1) % ring.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
 
+  // 编号标签：先放在设备中心；与已放的标签重叠就换到附近空位，离设备中心较远时画一条细引线
+  function labelsSvg(geo, groups, packs, v, k) {
+    const r = 9 * k, fs = 11 * k, items = [];
+    for (const ins of geo.instances) {
+      const g = groups.get(ins.key);
+      if (ins.cls !== "equipment" || !g || !g.no || !ins.outline.length) continue;
+      const ring = ins.outline.reduce((a, b) => (ringArea(b) > ringArea(a) ? b : a));
+      const [x, y] = ringCentroid(ring);
+      const w = Math.max(2 * r, (String(g.no).length * 0.62 + 0.9) * fs);
+      items.push({ ins, g, x, y, w, area: ringArea(ring) });
+    }
+    items.sort((a, b) => b.area - a.area);
+    const placed = [], pad = 2 * k;
+    const free = (cx, cy, w) => cx - w / 2 >= 0 && cx + w / 2 <= geo.width && cy - r >= 0 && cy + r <= geo.height
+      && !placed.some((q) => Math.abs(cx - q.cx) < (w + q.w) / 2 + pad && Math.abs(cy - q.cy) < 2 * r + pad);
+    const step = 2.2 * r, dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [.7, .7], [-.7, .7], [.7, -.7], [-.7, -.7]];
+    const out = [];
+    for (const it of items) {
+      let cx = it.x, cy = it.y;
+      if (!free(cx, cy, it.w)) {
+        search: for (let ring = 1; ring <= 4; ring++) {
+          for (const [dx, dy] of dirs) {
+            const px = it.x + dx * step * ring, py = it.y + dy * step * ring;
+            if (free(px, py, it.w)) { cx = px; cy = py; break search; }
+          }
+        }
+      }
+      placed.push({ cx, cy, w: it.w });
+      const { ins, g } = it;
+      const cls = v.hover === ins.key ? "lbl hover" : packs[ins.key] === "stack2" ? "lbl stack2" : packs[ins.key] !== undefined ? "lbl custom" : "lbl";
+      const moved = Math.hypot(cx - it.x, cy - it.y) > r;
+      out.push(`${moved ? `<line class="lead" x1="${it.x}" y1="${it.y}" x2="${cx}" y2="${cy}" style="stroke-width:${k}px"/><circle class="lead-dot" cx="${it.x}" cy="${it.y}" r="${2 * k}"/>` : ""}
+        <g class="${cls}" data-key="${esc(ins.key)}"><title>${esc(blockTitle(g))}</title>
+          <rect x="${cx - it.w / 2}" y="${cy - r}" width="${it.w}" height="${2 * r}" rx="${r}" style="stroke-width:${k}px"/>
+          <text x="${cx}" y="${cy}" style="font-size:${fs}px">${esc(g.no)}</text></g>`);
+    }
+    return out.join("");
+  }
+
+  // 点设备出现的小窗：显示是什么设备，给出“不计入这台 / 这一类全部不计入 / 计入这台”，或撤销已有的改判
+  function renderPop(el, did) {
+    const v = state.view[did], pop = el.querySelector(".viewer-pop");
+    if (!pop) return;
+    const ins = v.pop && v.geo.instances.find((i) => i.handle === v.pop.handle);
+    drawViewer(el, did);
+    if (!ins) { pop.hidden = true; return; }
+    const same = v.geo.instances.filter((i) => i.key === ins.key && i.cls === "equipment" && ins.block).length;
+    const name = ins.block || t("pack.loose", { h: ins.handle });
+    const btn = (act, label, cls = "") => `<button type="button" data-pop="${act}" class="${cls}">${esc(label)}</button>`;
+    let body;
+    if (ins.edit) body = `<p class="note">${esc(t("dev.edited", { c: t(ins.cls === "equipment" ? "dev.nowIn" : "dev.nowOut") }))}</p>${btn("withdraw", t("manual.withdraw"))}`;
+    else if (ins.cls === "equipment") body = btn("exclude-one", t("dev.excludeOne")) + (same > 1 ? btn("exclude-block", t("dev.excludeBlock", { n: same })) : "");
+    else body = `<p class="note">${esc(t("dev.why", { r: ins.reason || ins.measured }))}</p>${btn("include-one", t("dev.includeOne"), "primary")}`;
+    pop.innerHTML = `<b>${esc(name)}</b> <span class="muted">${esc(num(ins.area_m2, 2))} m² · ${esc(t(`dev.cls.${ins.cls}`))}</span>
+      ${ins.edit ? "" : `<input type="text" maxlength="200" data-pop-note placeholder="${esc(t("viewer.note"))}">`}
+      <div class="pop-actions">${body}${btn("close", t("viewer.cancel"), "link")}</div><p class="error pop-err" role="alert"></p>`;
+    const x = v.pop.at[0] / v.geo.width, y = v.pop.at[1] / v.geo.height;
+    pop.style.left = `${x * 100}%`; pop.style.top = `${y * 100}%`;
+    pop.style.transform = `translate(${x > 0.6 ? "-100%" : "0"}, ${y > 0.7 ? "-100%" : "0"})`;
+    pop.hidden = false;
+    pop.onclick = async (ev) => {
+      const b = ev.target.closest("[data-pop]");
+      if (!b) return;
+      const act = b.dataset.pop, note = (pop.querySelector("[data-pop-note]") || {}).value || "";
+      if (act === "close") { v.pop = null; renderPop(el, did); return; }
+      b.disabled = true;
+      try {
+        if (act === "withdraw") await withdrawEdit(did, ins.edit);
+        else await postDevice(did, act.startsWith("include") ? "include" : "exclude", act.endsWith("block") ? "block" : "one", ins.handle, note);
+      } catch (e) { pop.querySelector(".pop-err").textContent = e.message || t("err.network"); b.disabled = false; }
+    };
+  }
+
+  async function postDevice(did, op, scope, handle, note) {
+    const res = await fetch(`/api/jobs/${state.job.id}/drawings/${encodeURIComponent(did)}/devices`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op, scope, handle, note }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(say(body.error) || `HTTP ${res.status}`);
+    (state.view[did] || {}).pop = null;
+    await afterEdit(body, did);
+  }
+
   function drawViewer(el, did) {
     const v = state.view[did];
     const svg = el.querySelector("svg.viewer-svg");
-    if (!v || !v.geo || !svg) return;
+    if (!v || !v.geo || !svg || !state.job) return;
     const geo = v.geo;
     const col = ((state.job.estimate && state.job.estimate.drawings) || []).find((c) => String(c.id) === did);
     const groups = new Map(((col && col.block_groups) || []).map((g) => [g.key, g]));
@@ -714,27 +804,20 @@
     const parts = [];
     // 人工修正区域：黄 = 加入，红 = 剪掉
     for (const e of geo.edits) parts.push(`<path class="edit-${e.op === "add" ? "add" : "cut"}" d="${ringPath(e.points_px)}" style="stroke-width:${1.5 * k}px"/>`);
-    // 设备外边界：透明，可悬停 / 点击；已指定包装方式的图块类型着色，悬停的整类高亮
+    // 设备外边界：透明，可悬停 / 点击；已指定包装方式的图块类型着色，悬停的整类高亮；
+    // 人工改判的设备：黄虚线 = 改为计入，红斜纹 = 改为不计入；排除 / 待定 / 移动设备也可点（改判）
     for (const ins of geo.instances) {
-      const cls = v.hover === ins.key ? "inst hover" : packs[ins.key] === "stack2" ? "inst stack2" : packs[ins.key] !== undefined ? "inst custom" : "inst";
+      const changed = ins.edit && (ins.cls === "equipment") !== (ins.measured === "equipment");
+      const cls = ["inst", ins.cls !== "equipment" && !changed ? "off" : "",
+        changed ? (ins.cls === "equipment" ? "man-in" : "man-out") : "",
+        v.hover === ins.key && ins.cls === "equipment" ? "hover"
+          : ins.cls !== "equipment" ? "" : packs[ins.key] === "stack2" ? "stack2" : packs[ins.key] !== undefined ? "custom" : "",
+        v.pop && v.pop.handle === ins.handle ? "picked" : ""].filter(Boolean).join(" ");
       const g = groups.get(ins.key);
-      const title = g ? `<title>${esc(blockTitle(g))}</title>` : "";
-      parts.push(`<g class="${cls}" data-key="${esc(ins.key)}">${title}${ins.outline.map((r) => `<path d="${ringPath(r)}" style="stroke-width:${1.5 * k}px"/>`).join("")}</g>`);
+      const title = ins.cls === "equipment" && g ? `<title>${esc(blockTitle(g))}</title>` : `<title>${esc(ins.block || ins.handle)}</title>`;
+      parts.push(`<g class="${cls}" data-key="${esc(ins.key)}" data-h="${esc(ins.handle)}">${title}${ins.outline.map((r) => `<path d="${ringPath(r)}" style="stroke-width:${1.5 * k}px"/>`).join("")}</g>`);
     }
-    if (v.labels) {
-      const r = 9 * k, fs = 11 * k;
-      for (const ins of geo.instances) {
-        const g = groups.get(ins.key);
-        if (!g || !g.no || !ins.outline.length) continue;
-        const ring = ins.outline.reduce((a, b) => (ringArea(b) > ringArea(a) ? b : a));
-        const [x, y] = ringCentroid(ring);
-        const cls = v.hover === ins.key ? "lbl hover" : packs[ins.key] === "stack2" ? "lbl stack2" : packs[ins.key] !== undefined ? "lbl custom" : "lbl";
-        const w = Math.max(2 * r, (String(g.no).length * 0.62 + 0.9) * fs);
-        parts.push(`<g class="${cls}" data-key="${esc(ins.key)}"><title>${esc(blockTitle(g))}</title>
-          <rect x="${x - w / 2}" y="${y - r}" width="${w}" height="${2 * r}" rx="${r}" style="stroke-width:${k}px"/>
-          <text x="${x}" y="${y}" style="font-size:${fs}px">${esc(g.no)}</text></g>`);
-      }
-    }
+    if (v.labels) parts.push(labelsSvg(geo, groups, packs, v, k));
     svg.innerHTML = `<g class="layer-main">${parts.join("")}</g><g class="layer-draw"></g>`;
     drawLayer(el, did);
   }
@@ -1348,7 +1431,7 @@
       img.removeAttribute("loading");
     }
     // 报告是静态文件：去掉缩放、画区域、包装方式表等交互部分，保留图上的编号与修正区域
-    drawings.querySelectorAll(".viewer-tools, .block-table, .viewer-error, .edit-list button").forEach((n) => n.remove());
+    drawings.querySelectorAll(".viewer-tools, .block-table, .viewer-pop, .viewer-error, .edit-list button").forEach((n) => n.remove());
     drawings.querySelectorAll(".viewer-stage").forEach((n) => { n.style.width = "100%"; });
     // 报告是静态文件，没有“点击放大”
     drawings.querySelectorAll("figure[data-kind]").forEach((fig) => {

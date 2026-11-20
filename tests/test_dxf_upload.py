@@ -191,8 +191,8 @@ def test_manual_add_and_cut_regions_follow_the_file(client_dir, tmp_path):
     assert g[J.estimate.MANUAL_ADD_KEY]["area_m2"] == pytest.approx(2.0, rel=0.01)
     assert g["MACHINE"]["area_m2"] == pytest.approx(measured - 1.0, abs=0.1)
     wb = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))
-    assert "人工修正" in wb.sheetnames and "'人工修正'!$E$5" in wb["汇总"]["B9"].value
-    assert wb["人工修正"]["E5"].value == "=B5+C5-D5"
+    assert "人工修正" in wb.sheetnames and "'人工修正'!$G$5" in wb["汇总"]["B9"].value
+    assert wb["人工修正"]["G5"].value == "=B5-C5+D5+E5-F5"
 
     # 同一文件的新计算自动沿用；撤销后不再生效，但记录还在
     job2 = wait_for(client, submit_rows(client, [dict(sha256=sha256_bytes(data))]).json()["job_id"])
@@ -209,3 +209,46 @@ def test_manual_add_and_cut_regions_follow_the_file(client_dir, tmp_path):
     for bad in (dict(op="grow", points_px=px(0, 0, 1, 1)), dict(op="add", points_px=[[0, 0], [1, 1]]),
                 dict(op="add", points_px=[[0, 0], [10, 0], [20, 0]]), dict(op="add", points_px="x")):
         assert client.post(f"/api/jobs/{jid}/drawings/{did}/edits", json=bad).status_code == 400
+
+
+def test_click_a_device_to_stop_counting_it_and_count_it_again(client_dir, tmp_path):
+    # 点选设备改判：不计入这一台（-2 m²，图块编号不变）、整类不计入、撤销后恢复；绑定文件，旧测量结果不能改判
+    client = client_dir
+    data = dxf_bytes(tmp_path)
+    job = wait_for(client, upload(client, data).json()["job_id"])
+    jid, did = job["id"], job["drawings"][0]["id"]
+    measured = job["results"][0]["footprint_m2"]
+    assert job["results"][0]["devices_editable"]
+    geo = client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()
+    assert geo["devices_editable"] and len(geo["instances"]) >= MACHINES
+    first = geo["instances"][0]["handle"]
+    assert geo["instances"][0]["cls"] == "equipment" == geo["instances"][0]["measured"]
+
+    url = f"/api/jobs/{jid}/drawings/{did}/devices"
+    r = client.post(url, json=dict(op="exclude", handle=first, scope="one", note="测试：不是设备"))
+    assert r.status_code == 200, r.text
+    job1 = r.json()
+    e, man = job1["estimate"]["drawings"][0], job1["results"][0]["manual"]
+    assert man["device_removed_m2"] == pytest.approx(2.0, rel=0.02) and man["n_exclude"] == 1
+    assert e["fine_m2"] == pytest.approx(measured - 2.0, abs=0.1) and e["fine_measured_m2"] == pytest.approx(measured, abs=0.1)
+    g = {x["key"]: x for x in e["block_groups"]}
+    assert g["MACHINE"]["count"] == MACHINES - 1 and g["MACHINE"]["no"] == 1
+    geo = client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()
+    assert next(i for i in geo["instances"] if i["handle"] == first)["cls"] == "excluded"
+    assert geo["devices"][0]["status"] == "applied" and geo["devices"][0]["n_devices"] == 1
+    wb = load_workbook(io.BytesIO(client.get(job1["workbook_url"]).content))
+    assert wb["人工修正"]["C5"].value == pytest.approx(man["device_removed_m2"])
+
+    # 已经不计入的不能再不计入；整类不计入；新计算沿用；撤销后恢复
+    assert client.post(url, json=dict(op="exclude", handle=first, scope="one")).status_code == 400
+    assert client.post(url, json=dict(op="exclude", handle=first, scope="grow")).status_code == 400
+    assert client.post(url, json=dict(op="exclude", handle="nope", scope="one")).status_code == 400
+    job2 = wait_for(client, submit_rows(client, [dict(sha256=sha256_bytes(data))]).json()["job_id"])
+    assert job2["estimate"]["drawings"][0]["fine_m2"] == pytest.approx(measured - 2.0, abs=0.1)
+    r = client.post(url, json=dict(op="exclude", handle=geo["instances"][1]["handle"], scope="block"))
+    assert r.status_code == 200 and r.json()["results"][0]["manual"]["device_removed_m2"] == pytest.approx(2.0 * MACHINES, rel=0.02)
+    for x in client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()["devices"]:
+        r = client.delete(f"/api/jobs/{jid}/drawings/{did}/edits/{x['id']}")
+        assert r.status_code == 200
+    assert r.json()["estimate"]["drawings"][0]["fine_m2"] == pytest.approx(measured, abs=0.1)
+    assert client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()["withdrawn"] == 2

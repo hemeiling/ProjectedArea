@@ -394,19 +394,27 @@ def create_app(data_dir=None, desktop=False):
 
     @app.get("/api/jobs/{jid}/drawings/{did}/geometry")
     def drawing_geometry(jid: str, did: str):
-        """叠加图像素坐标中的计入设备外边界（带图块分组键）与生效的人工修正区域"""
+        """叠加图像素坐标中的设备外边界（带图块分组键、测量类别与人工改判后的类别）、生效的修正区域与设备改判"""
         _, drawing, result = _editable_result(jid, did)
         canvas = result["overlay_canvas"]
-        instances = [dict(handle=r["handle"], key=r["block"] if r.get("block") else f"loose:{r['handle']}",
-                          outline=r["outline_px"])
-                     for r in result.get("inserts") or [] if r.get("cls") == "equipment" and r.get("outline_px")]
-        effects = {e["id"]: e for e in (result.get("manual") or {}).get("edits", [])}
+        manual = result.get("manual") or {}
+        classes = manual.get("classes") or {}
+        devices_ok = J.devices_editable(result)
+        instances = [dict(handle=r["handle"], key=estimate.block_key(r), block=r.get("block"), cls=manual_edits.effective_class(r, classes),
+                          measured=r["cls"], reason=r.get("reason"), area_m2=r.get("area_m2"), outline=r["outline_px"],
+                          edit=(classes.get(r["handle"]) or [None, None])[1])
+                     for r in result.get("inserts") or []
+                     if r.get("outline_px") and (devices_ok or r.get("cls") == "equipment")]
+        effects = {e["id"]: e for e in manual.get("edits", [])}
+        active = lib.active_edits(drawing["sha256"])
         edits = [dict({k: v for k, v in e.items() if k != "points"}, points_px=manual_edits.to_px(e["points"], canvas),
                       area_m2=effects.get(e["id"], {}).get("area_m2"), effect_m2=effects.get(e["id"], {}).get("effect_m2"))
-                 for e in lib.active_edits(drawing["sha256"])]
+                 for e in active if manual_edits.is_region(e)]
+        devices = [dict(e, **{k: effects.get(e["id"], {}).get(k) for k in ("effect_m2", "n_devices", "status")})
+                   for e in active if not manual_edits.is_region(e)]
         withdrawn = sum(1 for e in lib.edits(drawing["sha256"]) if e.get("withdrawn_at"))
         return JSONResponse(dict(width=canvas["width"], height=canvas["height"], instances=instances, edits=edits,
-                                 withdrawn=withdrawn), headers=NO_CACHE)
+                                 devices=devices, devices_editable=devices_ok, withdrawn=withdrawn), headers=NO_CACHE)
 
     def _recalc(jid):
         with recalc_lock:
@@ -437,6 +445,38 @@ def create_app(data_dir=None, desktop=False):
             raise ApiError(400, msg("edit_bad", detail="no area"))
         lib.add_edit(drawing["sha256"], dict(id=secrets.token_hex(4), op=op, note=note[:manual_edits.MAX_NOTE],
                                              points=[[round(x, 3), round(y, 3)] for x, y in world],
+                                             unit_mm=result["unit_mm"], job=jid, drawing_name=drawing["name"]))
+        return _recalc(jid)
+
+    @app.post("/api/jobs/{jid}/drawings/{did}/devices")
+    def change_device(jid: str, did: str, payload: dict = Body(...)):
+        """点选设备改判：{op: exclude | include, handle, scope: one | block, note}。按 DXF 句柄存入图纸库（绑定文件哈希，
+        另记图块名和面积供套用时核对），再重算本任务"""
+        _, drawing, result = _editable_result(jid, did)
+        if not J.devices_editable(result):
+            raise ApiError(409, msg("device_not_editable"))
+        op, scope = payload.get("op"), payload.get("scope") or manual_edits.ONE
+        note = str(payload.get("note") or "").strip()
+        if op not in manual_edits.DEVICE_OPS or scope not in (manual_edits.ONE, manual_edits.BLOCK):
+            raise ApiError(400, msg("device_bad", detail="op / scope"))
+        rows = result.get("inserts") or []
+        row = next((r for r in rows if r["handle"] == payload.get("handle") and r.get("outline_px")), None)
+        if row is None:
+            raise ApiError(400, msg("device_bad", detail="handle"))
+        if scope == manual_edits.BLOCK and (op != manual_edits.EXCLUDE or not row.get("block")):
+            raise ApiError(400, msg("device_bad", detail="scope"))
+        classes = (result.get("manual") or {}).get("classes") or {}
+        now = manual_edits.effective_class(row, classes)
+        if scope == manual_edits.BLOCK:
+            todo = [r for r in rows if r.get("block") == row["block"] and r.get("outline_px")
+                    and manual_edits.effective_class(r, classes) == manual_edits.EQUIPMENT]
+            if not todo:
+                raise ApiError(400, msg("device_bad", detail="nothing to change"))
+        elif (now == manual_edits.EQUIPMENT) == (op == manual_edits.INCLUDE):
+            raise ApiError(400, msg("device_bad", detail="already " + ("counted" if op == manual_edits.INCLUDE else "not counted")))
+        lib.add_edit(drawing["sha256"], dict(id=secrets.token_hex(4), op=op, scope=scope, handle=row["handle"],
+                                             block=row.get("block"), area_m2=row.get("area_m2"), measured_cls=row["cls"],
+                                             reason=row.get("reason"), note=note[:manual_edits.MAX_NOTE],
                                              unit_mm=result["unit_mm"], job=jid, drawing_name=drawing["name"]))
         return _recalc(jid)
 

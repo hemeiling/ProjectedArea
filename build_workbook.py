@@ -187,36 +187,48 @@ if BP:
     bp_last = r - 1
     for c, w in zip("ABCDEFG", [10, 34, 8, 16, 12, 12, 18]): bp.column_dimensions[c].width = w
 
-# ===================================================== 人工修正（DXF：在叠加图上加入 / 剪掉的区域）
+# ===================================================== 人工修正（DXF：在叠加图上点选设备改判、画加入 / 剪掉的区域）
 MAN = [d for d in D if d.get("manual")]
 MAN_ROW = {}
+MAN_OPS = {"add": "加入区域", "cut": "剪掉区域", "include": "计入这台设备", "exclude": "不计入这台设备"}
+MAN_STATUS = {"unmatched": "未套用：与本次测量的设备对不上", "no_geometry": "未套用：本次测量没有逐台设备轮廓"}
 if MAN:
     mn = wb.create_sheet("人工修正")
-    mn["A1"] = "人工修正的投影面积（在网页叠加图上画出的区域；测量面积本身不变）"; mn["A1"].font = F(bold=True, size=13)
-    mn["A2"] = ("修正后面积 = 测量面积 + 加入 − 剪掉。加入 = 加入区域中原来没有计入的部分；剪掉 = 剪掉区域与已计入部分的交集，"
-                "同一处既加又剪时以剪掉为准。修正按图纸文件的 SHA-256 保存，文件改版后不会自动套用。"); mn["A2"].font = NOTE
-    header(mn, 4, ["图纸", "测量面积 (m²)", "人工加入 (m²)", "人工剪掉 (m²)", "修正后面积 (m²)"])
+    mn["A1"] = "人工修正的投影面积（在网页叠加图上点选设备、画区域；测量面积本身不变）"; mn["A1"].font = F(bold=True, size=13)
+    mn["A2"] = ("修正后面积 = 测量面积 − 设备不计入 + 设备计入 + 加入 − 剪掉。设备不计入只扣它独占的部分（与其他设备重叠的部分仍计入）；"
+                "加入 = 加入区域中原来没有计入的部分；剪掉 = 剪掉区域与已计入部分的交集，同一处既加又剪时以剪掉为准。"
+                "修正按图纸文件的 SHA-256 保存（设备按 DXF 句柄），文件改版后不会自动套用。"); mn["A2"].font = NOTE
+    header(mn, 4, ["图纸", "测量面积 (m²)", "设备不计入 (m²)", "设备计入 (m²)", "人工加入 (m²)", "人工剪掉 (m²)", "修正后面积 (m²)"])
     r = 5
     for d in MAN:
         m = d["manual"]
         put(mn, f"A{r}", str(d["id"]), "@")
         put(mn, f"B{r}", m["measured_m2"], "#,##0.0", BLUE)
-        put(mn, f"C{r}", m["added_m2"], "#,##0.0", BLUE)
-        put(mn, f"D{r}", m["cut_m2"], "#,##0.0", BLUE)
-        put(mn, f"E{r}", f"=B{r}+C{r}-D{r}", "#,##0.0", BOLD)
+        put(mn, f"C{r}", m.get("device_removed_m2", 0.0), "#,##0.0", BLUE)
+        put(mn, f"D{r}", m.get("device_added_m2", 0.0), "#,##0.0", BLUE)
+        put(mn, f"E{r}", m["added_m2"], "#,##0.0", BLUE)
+        put(mn, f"F{r}", m["cut_m2"], "#,##0.0", BLUE)
+        put(mn, f"G{r}", f"=B{r}-C{r}+D{r}+E{r}-F{r}", "#,##0.0", BOLD)
         MAN_ROW[str(d["id"])] = r; r += 1
     r += 1
-    header(mn, r, ["图纸", "操作", "区域面积 (m²)", "单独效果 (m²)", "备注", "时间", "记录编号"]); r += 1
+    header(mn, r, ["图纸", "操作", "设备（图块 / 句柄）", "区域面积 / 台数", "单独效果 (m²)", "备注", "时间", "记录编号"]); r += 1
     for d in MAN:
         for e in d["manual"]["edits"]:
+            op = MAN_OPS.get(e["op"], e["op"])
+            if e["op"] == "exclude" and e.get("scope") == "block":
+                op = "这一类全部不计入"
             put(mn, f"A{r}", str(d["id"]), "@")
-            put(mn, f"B{r}", "加入" if e["op"] == "add" else "剪掉")
-            put(mn, f"C{r}", e["area_m2"], "#,##0.0")
-            put(mn, f"D{r}", e["effect_m2"], "#,##0.0")
-            put(mn, f"E{r}", e.get("note") or "")
-            put(mn, f"F{r}", (e.get("created_at") or "")[:16].replace("T", " "))
-            put(mn, f"G{r}", e.get("id") or "", "@"); r += 1
-    for c, w in zip("ABCDEFG", [10, 16, 16, 16, 40, 18, 12]): mn.column_dimensions[c].width = w
+            put(mn, f"B{r}", op)
+            if e["op"] in ("add", "cut"):
+                put(mn, f"D{r}", e["area_m2"], "#,##0.0")
+            else:
+                put(mn, f"C{r}", f"{e.get('block') or '散线设备'} / {e.get('handle')}")
+                put(mn, f"D{r}", f"{e.get('n_devices', 0)} 台", "@")
+            put(mn, f"E{r}", e["effect_m2"], "#,##0.0")
+            put(mn, f"F{r}", "；".join(x for x in (e.get("note"), MAN_STATUS.get(e.get("status"))) if x))
+            put(mn, f"G{r}", (e.get("created_at") or "")[:16].replace("T", " "))
+            put(mn, f"H{r}", e.get("id") or "", "@"); r += 1
+    for c, w in zip("ABCDEFGH", [10, 18, 30, 16, 16, 40, 18, 12]): mn.column_dimensions[c].width = w
 
 # ===================================================== 汇总
 sm = wb.create_sheet("汇总", 0)
@@ -282,7 +294,7 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
                   + "+SUMIF('图块包装'!$A$5:$A${bp_last},{c}5,'图块包装'!$G$5:$G${bp_last})")
         else:
             f_ = ALT[key] if own and key in ALT else f
-        fp = f"'人工修正'!$E${MAN_ROW[str(d['id'])]}" if str(d["id"]) in MAN_ROW else d["footprint_m2"]
+        fp = f"'人工修正'!$G${MAN_ROW[str(d['id'])]}" if str(d["id"]) in MAN_ROW else d["footprint_m2"]
         v = f_.format(c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=fp, bp_last=bp_last)
         if v.replace(".", "").isdigit():
             v = float(v) if "." in v else v

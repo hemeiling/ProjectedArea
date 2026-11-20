@@ -115,33 +115,46 @@ def fine_area(drawing):
     return manual["adjusted_m2"] if manual else drawing["footprint_m2"]
 
 
+def block_key(row):
+    """设备行 -> 图块分组键（打散的设备线条每团单独一组）"""
+    return row["block"] if row.get("block") else f"loose:{row['handle']}"
+
+
 def block_groups(drawing):
-    """DXF：计入的设备按图块类型分组（打散的设备线条每团单独一组），按毛面积从大到小排列并编号 1、2、3…
-    （编号与页面叠加图上的标注一致）。
+    """DXF：计入的设备按图块类型分组，按毛面积从大到小排列并编号 1、2、3…（编号与页面叠加图上的标注一致）。
 
     各图块轮廓之间有重叠（投影面积是并集），重叠部分按毛面积比例分摊，使各组面积之和 = 投影面积。
-    有人工修正时：被剪掉的部分从相应插入的毛面积中扣除（kept 比例），各组分摊“测量轮廓 − 剪掉区域”；
-    人工加入的区域单独一组（MANUAL_ADD_KEY，不编号），各组之和 = 修正后面积。
+    有人工修正时：改判的设备按新类别分组（不计入的不算，计入的加到它的图块类型）；被剪掉的部分从相应设备的
+    毛面积中扣除（kept 比例），各组分摊“改判后的轮廓 − 剪掉区域”；人工加入的区域单独一组（MANUAL_ADD_KEY，不编号），
+    各组之和 = 修正后面积。编号按测量时的分组，不随人工修正变化；只因人工计入才出现的图块类型排在后面。
     PDF（没有图块，或已按工位分摊）返回 []。
     """
     if drawing.get("stations"):
         return []
     manual = drawing.get("manual") or {}
     kept = manual.get("kept") or {}
-    groups = {}
+    classes = manual.get("classes") or {}
+    groups, measured = {}, {}
     for i in drawing.get("inserts") or []:
-        if i.get("cls") != "equipment" or not i.get("area_m2"):
+        if not i.get("area_m2"):
             continue
-        key = i["block"] if i.get("block") else f"loose:{i['handle']}"
+        key = block_key(i)
+        if i.get("cls") == "equipment":
+            measured[key] = measured.get(key, 0.0) + i["area_m2"]
+        if (classes.get(i["handle"]) or [i.get("cls")])[0] != "equipment":
+            continue
         g = groups.setdefault(key, dict(key=key, block=i.get("block"), count=0, measured_m2=0.0, gross_m2=0.0))
         g["count"] += 1
         g["measured_m2"] += i["area_m2"]
         g["gross_m2"] += i["area_m2"] * kept.get(i["handle"], 1.0)
+    order = sorted(measured, key=lambda k: (-measured[k], k))
+    order += sorted((k for k in groups if k not in measured), key=lambda k: (-groups[k]["measured_m2"], k))
+    no = {k: n for n, k in enumerate(order, 1)}
     gross = sum(g["gross_m2"] for g in groups.values())
-    out = sorted(groups.values(), key=lambda g: (-g["measured_m2"], g["key"]))   # 编号不随人工剪切变化
+    out = sorted(groups.values(), key=lambda g: no[g["key"]])
     base = manual["blocks_m2"] if manual else drawing["footprint_m2"]
-    for n, g in enumerate(out, 1):
-        g["no"] = n
+    for g in out:
+        g["no"] = no[g["key"]]
         g["area_m2"] = g["gross_m2"] * base / gross if gross else 0.0
     if manual.get("manual_add_m2"):
         out.append(dict(key=MANUAL_ADD_KEY, block=None, no=None, count=manual.get("n_add", 0), measured_m2=0.0,
@@ -245,6 +258,8 @@ def summarize(drawing, p, cfg):
         fine_measured_m2=manual["measured_m2"] if manual else fine,
         manual_added_m2=manual["added_m2"] if manual else 0.0,
         manual_cut_m2=manual["cut_m2"] if manual else 0.0,
+        manual_device_removed_m2=manual.get("device_removed_m2", 0.0) if manual else 0.0,
+        manual_device_added_m2=manual.get("device_added_m2", 0.0) if manual else 0.0,
         fine_vs_baseline=fine / baseline if baseline else None,
         labor_area_basis=p["labor_area_basis"],
         labor_area_m2=labor_area,

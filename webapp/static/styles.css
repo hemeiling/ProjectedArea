@@ -80,7 +80,7 @@ input.invalid { border-color: var(--red); background: var(--red-soft); }
 .langswitch button[aria-pressed="true"] { background: var(--ink); color: #fff; }
 
 /* ---------- 页面 */
-.page { max-width: 1180px; margin: 0 auto; padding: 20px 24px 48px; }
+.page { max-width: 1560px; margin: 0 auto; padding: 20px 24px 48px; }
 .lede { color: var(--ink-2); margin: 0 0 16px; max-width: 80ch; }
 .card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
@@ -329,3 +329,29 @@ table.blocks tr:hover td { background: #FFF1E6; }
 table.blocks tr.flash td { animation: rowflash 1.4s ease-out; }
 @keyframes rowflash { from { background: #FDBA74; } to { background: transparent; } }
 .amber { color: var(--amber); }
+
+/* 图在左、包装系数表在右（右侧固定在屏幕上，图滚动时不跟着走） */
+.viewer { display: grid; grid-template-columns: minmax(0, 1fr) 460px; gap: 14px; align-items: start; }
+.viewer-main { min-width: 0; }
+.viewer-side { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow: auto; margin-top: 0;
+               border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--panel); }
+.viewer-side h4 { margin: 2px 0 6px; font-size: 14px; }
+.viewer-side .block-scroll { max-height: none; overflow: visible; }
+.viewer-side table.blocks td.mode { white-space: normal; }
+.viewer-side table.blocks td.mode select { max-width: 150px; }
+.viewer-side table.blocks td.mode input { width: 64px; margin: 4px 0 0; display: block; }
+.result-strip { margin: 4px 0; font-weight: 600; }
+@media (max-width: 1100px) { .viewer { grid-template-columns: minmax(0, 1fr); } .viewer-side { position: static; max-height: none; } }
+/* 点设备 */
+.viewer-svg .inst.off path { fill: transparent; stroke: none; }
+.viewer-svg .inst.man-in path { fill: rgba(250, 204, 21, .35); stroke: #A16207; stroke-dasharray: 6 4; }
+.viewer-svg .inst.man-out path { fill: rgba(220, 38, 38, .3); stroke: #B91C1C; }
+.viewer-svg .inst.picked path { stroke: #2563EB; stroke-width: 3px; fill: rgba(37, 99, 235, .15); }
+.viewer-svg .lead { stroke: #12181B; }
+.viewer-svg .lead-dot { fill: #12181B; }
+.viewer-pop { position: absolute; z-index: 5; min-width: 230px; max-width: 320px; padding: 8px 10px; background: #fff;
+              border: 1px solid var(--line-2); border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); font-size: 13px; }
+.viewer-pop[hidden] { display: none; }
+.viewer-pop input { width: 100%; margin: 6px 0; box-sizing: border-box; }
+.pop-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pop-err { margin: 4px 0 0; }

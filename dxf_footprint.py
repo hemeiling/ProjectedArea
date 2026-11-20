@@ -14,6 +14,9 @@ DXF 产线布局 -> 设备投影面积（按图块计算）。
   6. 输出与 estimate_footprint.py 相同格式的结果（面积、线体外包尺寸、叠加图），另附每个插入的明细与原因。
      叠加图的像素坐标系（overlay_canvas）和每个计入设备的外边界（outline_px）也一并输出：页面用它们在图上标图块编号、
      画人工修正区域；人工区域再用同一坐标系换回图纸坐标，由后台计算面积。
+     排除、待定、移动设备中画在叠加图上的也输出 outline_px，供页面点选后人工改判（计入 / 不计入）。
+  7. 每个有轮廓的设备另存一份精确轮廓（<id>_instances.json）：图块轮廓在图块坐标里只存一次，每个插入存它的
+     仿射变换（与第 3 步完全相同的变换）；人工改判设备后，后台用它重算投影面积，不必重新测量。
 
 用法：
     python dxf_footprint.py config.yaml --out results            # 配置中 drawings 带 dxf: 的图纸
@@ -27,6 +30,7 @@ import time
 
 import cv2
 import ezdxf
+import shapely
 import numpy as np
 from ezdxf import bbox as ezbbox
 import yaml
@@ -344,7 +348,7 @@ def measure(drawing, conf, out_dir):
 
     # 图块外轮廓：每个（图块, 颜色继承, 图层继承）只算一次
     cache, block_info = {}, {}
-    local, boxes = [], []
+    local, boxes, block_keys, affines = [], [], [], []
     for ins in inserts:
         key = (ins.dxf.name, ins.dxf.get("color", 256), ins.dxf.layer)
         if key not in cache:
@@ -354,7 +358,9 @@ def measure(drawing, conf, out_dir):
             block_info[ins.dxf.name] = dict(entities=len(doc.blocks.get(ins.dxf.name)), polylines=len(polys),
                                             skipped=skipped, **info)
         geom, _ = cache[key]
-        g = affinity.affine_transform(geom, insert_affine(ins)) if geom is not None else None
+        block_keys.append(key)
+        affines.append(insert_affine(ins))
+        g = affinity.affine_transform(geom, affines[-1]) if geom is not None else None
         local.append(g)
         boxes.append(g.bounds if g is not None else None)
     bcache = ezbbox.Cache()
@@ -434,11 +440,14 @@ def measure(drawing, conf, out_dir):
     canvas = overlay_canvas(view) if view is not None else None
     draw_overlay(ov_path, inserts, rows, cache, footprint, frame, [b or e for b, e in zip(boxes, extents)], loose_list,
                  region, canvas, [l_["box"] for l_ in envelope["lanes"]])
+    ig_path = None
     if canvas is not None:
         geoms = local[:len(inserts)] + [it["geom"] for it in loose_list]
-        for r, g in zip(rows, geoms):
-            if r["cls"] == "equipment" and g is not None:
+        for i, (r, g) in enumerate(zip(rows, geoms)):
+            if g is not None and pickable(r, i, frame) and on_canvas(g.bounds, canvas):
                 r["outline_px"] = outline_px(g, canvas)
+        ig_path = os.path.join(out_dir, f"{drawing['id']}_instances.json")
+        write_instances(ig_path, rows, cache, block_keys, affines, loose_list, unit)
     groups = sorted((dict(footprint_m2=round(p.area * to_m2, 2),
                           length_mm=round(max(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1]) * unit),
                           width_mm=round(min(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1]) * unit))
@@ -465,7 +474,7 @@ def measure(drawing, conf, out_dir):
                                                           for r in unresolved],
                 stations=[], station_sum_m2=0.0, inserts=rows, blocks=block_info,
                 overlay=os.path.basename(ov_path), station_overlay=None, footprint_wkt=os.path.basename(fp_path),
-                overlay_canvas=canvas, seconds=dict(load=round(load_s, 1), total=round(time.time() - t0, 1)))
+                instance_geoms=os.path.basename(ig_path) if ig_path else None, overlay_canvas=canvas, seconds=dict(load=round(load_s, 1), total=round(time.time() - t0, 1)))
 
 
 # ---------------------------------------------------------------- 4b. 线体基准
@@ -531,8 +540,40 @@ def overlay_canvas(view, max_px=OVERLAY_MAX_PX):
     return dict(x0=X0, y1=Y1, scale=s, width=int((X1 - X0) * s) + 1, height=int((Y1 - Y0) * s) + 1)
 
 
+def pickable(row, i, frame):
+    """能在叠加图上点选、人工改判的设备：计入的设备，以及叠加图上画了框的排除 / 待定 / 移动设备
+    （按图层排除的、背景框不画，也不能点）"""
+    return row["cls"] == "equipment" or (i != frame and not row["reason"].startswith("图层"))
+
+
+def on_canvas(b, canvas):
+    s = canvas["scale"]
+    return not (b[2] < canvas["x0"] or b[0] > canvas["x0"] + canvas["width"] / s
+                or b[3] < canvas["y1"] - canvas["height"] / s or b[1] > canvas["y1"])
+
+
+def write_instances(path, rows, cache, block_keys, affines, loose_list, unit):
+    """有 outline_px 的设备的精确轮廓（图纸单位，世界坐标由 affine 换算）：
+    {unit_mm, blocks: [图块坐标中的轮廓 WKT], items: {handle: {block: 序号, affine: [a, b, d, e, xoff, yoff]} 或 {wkt}}}"""
+    blocks, index, items = [], {}, {}
+    n_ins = len(block_keys)
+    for i, r in enumerate(rows):
+        if not r.get("outline_px"):
+            continue
+        if i < n_ins:
+            key = block_keys[i]
+            if key not in index:
+                index[key] = len(blocks)
+                blocks.append(shapely.to_wkt(cache[key][0], rounding_precision=-1))
+            items[r["handle"]] = dict(block=index[key], affine=list(affines[i]))
+        else:
+            items[r["handle"]] = dict(wkt=shapely.to_wkt(loose_list[i - n_ins]["geom"], rounding_precision=-1))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(dict(unit_mm=unit, blocks=blocks, items=items), f)
+
+
 def outline_px(geom, canvas):
-    """计入设备的外边界在叠加图上的像素坐标（按 1 像素简化，取整）：只用于页面显示、选择和按区域分摊，
+    """设备的外边界在叠加图上的像素坐标（按 1 像素简化，取整）：只用于页面显示、选择和按区域分摊，
     不参与面积计算"""
     s, x0, y1 = canvas["scale"], canvas["x0"], canvas["y1"]
     out = []

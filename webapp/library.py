@@ -8,7 +8,8 @@
 <data>/cache/<key>/                一次测量的结果（result.json + 叠加图 + DXF 计入轮廓）
 
 识别“同一文件”只看内容哈希，不看文件名：改名的同一文件会被识别，内容有任何改动（新版本）都不会。
-人工修正面积的区域（manual_edits，图纸坐标）也记在元数据里，所以只用于同一文件；撤销的修正保留记录，不再生效。
+人工修正（manual_edits：画的区域按图纸坐标、设备改判按 DXF 句柄）也记在元数据里，所以只用于同一文件；
+撤销的修正保留记录，不再生效。
 测量缓存的键包含提取参数和测量代码（PDF：estimate_footprint.py、stations.py；DXF：dxf_footprint.py）的哈希，
 代码或参数一变，旧结果自动失效。
 """
@@ -36,7 +37,7 @@ PDF_CODE = ("estimate_footprint.py", "stations.py")
 DXF_CODE = ("dxf_footprint.py",)
 # 缓存中保存的结果文件：results.json 中的字段 -> (缓存里的固定文件名, 任务里的文件名后缀)
 CACHED_FILES = (("overlay", "overlay.png", "overlay.png"), ("station_overlay", "stations.png", "stations.png"),
-                ("footprint_wkt", "footprint.wkt", "footprint.wkt"))
+                ("footprint_wkt", "footprint.wkt", "footprint.wkt"), ("instance_geoms", "instances.json", "instances.json"))
 
 
 def code_version(estimator_dir, names=PDF_CODE):

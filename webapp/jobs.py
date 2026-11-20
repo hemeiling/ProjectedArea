@@ -9,8 +9,8 @@
 PDF 未填写标注总尺寸时，沿用该文件上次的标注尺寸；从未填写过则停下来请用户填写（附提示图）。
 DXF 单位：文件声明（$INSUNITS）> 用户上传时选择 > config.yaml 中按文件哈希核对过的记录 > 该文件上次的单位；
 都没有则停下来请用户选择，绝不默认为 mm。按文件哈希核对过的人工分类（overrides）只用于同一文件。
-DXF 的人工修正区域（加入 / 剪掉）同样按文件哈希保存在图纸库，每次计算、重新计算时套用（manual_edits.py），
-测量面积本身不变，修正单独记在 results.json 该图的 manual 中。
+DXF 的人工修正（画的加入 / 剪掉区域、点选设备的计入 / 不计入）同样按文件哈希保存在图纸库，每次计算、重新计算时
+套用（manual_edits.py），测量面积本身不变，修正单独记在 results.json 该图的 manual 中。
 
 每个任务一个私有目录 <data>/jobs/<id>/：
     config.yaml       本任务的配置（图纸 + 参数），可直接用于命令行复现
@@ -424,6 +424,11 @@ def editable(r):
     return r.get("source") == dxfinfo.DXF and bool(r.get("overlay_canvas")) and bool(r.get("footprint_wkt"))
 
 
+def devices_editable(r):
+    """能否点选设备改判：还要有每个设备的精确轮廓（v1.2.4 起的测量结果才有）"""
+    return editable(r) and bool(r.get("instance_geoms"))
+
+
 def attach_manual(lib, drawings, results, results_dir):
     """把图纸库中各文件生效的人工修正套用到本任务的测量结果上（results 原地修改：加上或去掉 manual）"""
     for d, r in zip(drawings, results):
@@ -433,7 +438,11 @@ def attach_manual(lib, drawings, results, results_dir):
             continue
         with open(os.path.join(results_dir, r["footprint_wkt"]), encoding="utf-8") as f:
             footprint = wkt.loads(f.read())
-        r["manual"] = manual_edits.apply(footprint, active, r["unit_mm"], r.get("inserts") or [], r["overlay_canvas"])
+        geoms = None
+        if devices_editable(r):
+            geoms = manual_edits.load_instances(os.path.join(results_dir, r["instance_geoms"]))
+        r["manual"] = manual_edits.apply(footprint, active, r["unit_mm"], r.get("inserts") or [], r["overlay_canvas"],
+                                         geoms)
 
 
 def _write_results(results_dir, extraction, results):
@@ -457,7 +466,8 @@ def public_results(results):
                      line_region_basis=(d.get("line_region") or {}).get("basis"),
                      n_equipment=sum(r["cls"] == "equipment" for r in rows),
                      n_excluded=sum(r["cls"] == "excluded" for r in rows),
-                     editable=editable(d), manual={k: v_ for k, v_ in d["manual"].items() if k != "kept"}
+                     editable=editable(d), devices_editable=devices_editable(d),
+                     manual={k: v_ for k, v_ in d["manual"].items() if k not in ("kept", "classes")}
                      if d.get("manual") else None)
         out.append(v)
     return out
