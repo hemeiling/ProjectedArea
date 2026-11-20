@@ -18,7 +18,8 @@ with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as f:   # 安装包�
     VERSION = f.read().strip()
 
 datas = [(os.path.join(ROOT, f), ".") for f in
-         ("estimate_footprint.py", "stations.py", "dxf_footprint.py", "build_workbook.py", "estimate.py", "config.yaml")]
+         ("estimate_footprint.py", "stations.py", "dxf_footprint.py", "build_workbook.py", "estimate.py", "manual_edits.py",
+          "config.yaml")]
 datas += [(os.path.join(ROOT, "webapp", "static"), os.path.join("webapp", "static")),
           (os.path.join(ROOT, "webapp", "hosting.yaml"), "webapp")]
 tesseract = os.path.join(ROOT, "vendor", "tesseract")
@@ -27,7 +28,7 @@ if os.path.isdir(tesseract):
 
 # 估算脚本由 runpy 运行，PyInstaller 看不到它们的 import，需显式列出
 hiddenimports = collect_submodules("uvicorn") + ["openpyxl", "pytesseract", "estimate_footprint", "stations",
-                                                 "dxf_footprint", "PIL.ImageDraw"]
+                                                 "dxf_footprint", "manual_edits", "PIL.ImageDraw"]
 
 a = Analysis([os.path.join(ROOT, "desktop.py")], pathex=[ROOT], datas=datas, hiddenimports=hiddenimports,
              excludes=["tkinter", "matplotlib", "IPython", "pytest", "PyQt5", "PyQt6", "PySide2", "PySide6"])

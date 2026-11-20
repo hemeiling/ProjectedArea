@@ -8,6 +8,7 @@
 <data>/cache/<key>/                一次测量的结果（result.json + 叠加图 + DXF 计入轮廓）
 
 识别“同一文件”只看内容哈希，不看文件名：改名的同一文件会被识别，内容有任何改动（新版本）都不会。
+人工修正面积的区域（manual_edits，图纸坐标）也记在元数据里，所以只用于同一文件；撤销的修正保留记录，不再生效。
 测量缓存的键包含提取参数和测量代码（PDF：estimate_footprint.py、stations.py；DXF：dxf_footprint.py）的哈希，
 代码或参数一变，旧结果自动失效。
 """
@@ -123,6 +124,33 @@ class Library:
             meta.update(name=name, footprint_m2=footprint_m2, last_used=_now(),
                         uses=meta["uses"] + 1, jobs=(meta["jobs"] + [job_id])[-50:])
             _write_json(self._meta_path(sha), meta)
+
+    # ------------------------------------------------------------ 人工修正区域（只属于这一份文件）
+    def edits(self, sha):
+        """这份文件的全部人工修正记录（含已撤销的，撤销的带 withdrawn_at）"""
+        return list((self.get(sha) or {}).get("manual_edits") or [])
+
+    def active_edits(self, sha):
+        return [e for e in self.edits(sha) if not e.get("withdrawn_at")]
+
+    def add_edit(self, sha, edit):
+        with self._lock:
+            meta = self.get(sha)
+            if meta is None:
+                raise KeyError(sha)
+            meta.setdefault("manual_edits", []).append(dict(edit, created_at=_now()))
+            _write_json(self._meta_path(sha), meta)
+
+    def withdraw_edit(self, sha, edit_id, job_id):
+        """撤销一条修正：记录撤销时间和任务，不删除。返回是否找到生效中的这条修正。"""
+        with self._lock:
+            meta = self.get(sha)
+            for e in (meta or {}).get("manual_edits") or []:
+                if e["id"] == edit_id and not e.get("withdrawn_at"):
+                    e.update(withdrawn_at=_now(), withdrawn_in_job=job_id)
+                    _write_json(self._meta_path(sha), meta)
+                    return True
+            return False
 
     def entries(self):
         out = []

@@ -96,6 +96,15 @@ MESSAGES = {
     "job_not_ready": (
         "任务尚未完成。",
         "The estimate has not finished yet."),
+    "edit_not_editable": (
+        "这张图不能在图上修正：只支持 DXF，且需要用新版本重新测量（新建一次计算即可）。",
+        "This drawing cannot be corrected on the overlay: DXF only, and it must be measured again with the current version (start a new estimate)."),
+    "edit_bad": (
+        "修正区域无效：{detail}",
+        "Invalid correction area: {detail}"),
+    "edit_not_found": (
+        "没有找到这条修正（可能已经撤销）。",
+        "Correction not found (it may already be withdrawn)."),
 
     "dimension_needed": (
         "缺少标注总尺寸：{names}。比例尺只能来自图上的标注数字（PDF 中的文字是图形，无法直接读取）。"

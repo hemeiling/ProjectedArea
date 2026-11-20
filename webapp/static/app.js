@@ -69,7 +69,8 @@
   // rows: [{file: File|null, kind: "pdf"|"dxf", sha256, known, hashing, meta, filename, size, name, ref, mpp, unit}]
   // 浏览器里算指纹要把整个文件读进内存；更大的文件直接上传，服务器收到时同样按内容识别同一文件
   const HASH_MAX_BYTES = 512 * 1024 * 1024;
-  const state = { lang: "zh", meta: null, system: null, rows: [], addNote: null, job: null, library: [], pollTimer: null, pollFailures: 0 };
+  const state = { lang: "zh", meta: null, system: null, rows: [], addNote: null, job: null, library: [], pollTimer: null, pollFailures: 0,
+    packs: {}, packsDirty: {}, geo: {}, view: {}, draw: null };
 
   // ------------------------------------------------------------ 文字与格式
   function t(key, vars) {
@@ -153,7 +154,9 @@
       if (state.job) {
         buildParamGrid($("recalcGrid"), readParams($("recalcGrid")));
         buildFrameGrid(state.job, readFrameBoxes());
-        buildPackGrid(state.job, readBlockPacking());
+        const dirty = state.packsDirty;
+        initPacks(state.job, readBlockPacking());
+        state.packsDirty = dirty;
       }
     }
     renderRows();
@@ -367,116 +370,388 @@
   }
 
   // 按图块类型的包装方式（可选，仅 DXF）：下拉选图块 + 可叠 2 层 / 自定义系数 + 添加；没添加的图块按默认包装系数
-  const PACK_SEP = "\u0001";
-  function buildPackGrid(job, values) {
-    const cols = ((job.estimate && job.estimate.drawings) || []).filter((c) => (c.block_groups || []).length);
-    state.packCols = cols;
+  // ------------------------------------------------------------ 叠加图：图块编号、按图块的包装方式、人工修正区域（DXF）
+  // 包装方式 state.packs = {图纸 id: {图块键: "stack2" | 系数字符串}}，随“重新计算”提交；
+  // 图上的编号 = estimate.block_groups 的 no（按测量面积从大到小），与表格、Excel『图块包装』页一致。
+  // 修正区域在叠加图像素坐标中画出，后端换回图纸坐标、计算面积并按文件哈希保存。
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const ZOOMS = [1, 2, 4];
+
+  function initPacks(job, values) {
     state.packs = {};
+    const cols = (job.estimate && job.estimate.drawings) || [];
     for (const [did, blocks] of Object.entries(values || (job.params && job.params.block_packing) || {})) {
       const col = cols.find((c) => String(c.id) === String(did));
       for (const [key, v] of Object.entries(blocks || {})) {
-        if (col && col.block_groups.some((g) => g.key === key)) (state.packs[String(did)] ||= {})[key] = String(v);
+        if (col && (col.block_groups || []).some((g) => g.key === key)) (state.packs[String(did)] ||= {})[key] = String(v);
       }
     }
-    // 旧版本算出的结果里还没有图块分组：DXF 任务提示先重新计算一次
-    state.packStale = cols.length === 0 && (job.results || []).some((r) => r.source === "dxf");
-    $("packBox").hidden = cols.length === 0 && !state.packStale;
-    renderPackGrid();
+    state.packsDirty = {};
+    $("packBox").hidden = !(job.results || []).some((r) => r.source === "dxf");
   }
 
   const packFactorOk = (v) => { const n = Number(v); return v !== "" && Number.isFinite(n) && n >= 0.05 && n <= 5; };
-  const blockLabel = (g) => g.block || t("pack.loose", { h: g.key.split(":").slice(1).join(":") });
-  const blockInfo = (g) => t("pack.item", { n: g.count, a: num(g.area_m2, 1) });
-
-  function packChoice(value, onChange) {
-    // 方式下拉 + 自定义系数输入框；value: "stack2" 或数字字符串
-    const mode = document.createElement("select");
-    mode.setAttribute("aria-label", t("pack.mode"));
-    mode.innerHTML = `<option value="stack2">${esc(t("pack.stack2"))}</option><option value="custom">${esc(t("pack.custom"))}</option>`;
-    const factor = document.createElement("input");
-    factor.type = "number"; factor.min = "0.05"; factor.max = "5"; factor.step = "0.05"; factor.inputMode = "decimal";
-    factor.placeholder = t("pack.factor"); factor.setAttribute("aria-label", t("pack.factor"));
-    mode.value = value === "stack2" || value === "" ? "stack2" : "custom";
-    factor.value = mode.value === "custom" ? value : "";
-    const sync = () => {
-      factor.hidden = mode.value !== "custom";
-      factor.classList.toggle("invalid", mode.value === "custom" && factor.value !== "" && !packFactorOk(factor.value));
-      onChange(mode.value === "stack2" ? "stack2" : factor.value);
-    };
-    mode.addEventListener("change", sync);
-    factor.addEventListener("input", sync);
-    factor.hidden = mode.value !== "custom";
-    return [mode, factor];
-  }
-
-  function renderPackGrid() {
-    const grid = $("packGrid");
-    grid.textContent = "";
-    if (state.packStale) {
-      const p = document.createElement("p");
-      p.className = "note"; p.textContent = t("pack.stale");
-      grid.appendChild(p);
-      return;
-    }
-    let any = false;
-    for (const col of state.packCols) {
-      for (const [key, value] of Object.entries(state.packs[String(col.id)] || {})) {
-        const g = col.block_groups.find((x) => x.key === key);
-        if (!g) continue;
-        any = true;
-        const row = document.createElement("div");
-        row.className = "frame-row";
-        const name = document.createElement("span");
-        name.className = "name";
-        name.textContent = `${col.name} · ${blockLabel(g)} · ${blockInfo(g)}`;
-        const [mode, factor] = packChoice(value, (v) => { state.packs[String(col.id)][key] = v; });
-        const del = document.createElement("button");
-        del.type = "button"; del.className = "link"; del.textContent = t("frame.remove");
-        del.addEventListener("click", () => {
-          delete state.packs[String(col.id)][key];
-          if (!Object.keys(state.packs[String(col.id)]).length) delete state.packs[String(col.id)];
-          renderPackGrid();
-        });
-        row.append(name, mode, factor, del);
-        grid.appendChild(row);
-      }
-    }
-    if (!any) {
-      const none = document.createElement("p");
-      none.className = "note"; none.textContent = t("pack.none");
-      grid.appendChild(none);
-    }
-    // 添加一行：图块下拉按图纸分组，只列还没添加的图块（按面积从大到小）
-    const row = document.createElement("div");
-    row.className = "frame-row frame-add";
-    const pick = document.createElement("select");
-    pick.setAttribute("aria-label", t("pack.pick"));
-    pick.innerHTML = `<option value="">${esc(t("pack.pick"))}</option>` + state.packCols.map((col) => {
-      const opts = col.block_groups.filter((g) => !((state.packs[String(col.id)] || {})[g.key] !== undefined))
-        .map((g) => `<option value="${esc(String(col.id) + PACK_SEP + g.key)}">${esc(`${blockLabel(g)} · ${blockInfo(g)}`)}</option>`).join("");
-      return opts ? `<optgroup label="${esc(col.name)}">${opts}</optgroup>` : "";
-    }).join("");
-    let choice = "stack2";
-    const add = document.createElement("button");
-    add.type = "button"; add.textContent = t("frame.add");
-    const ready = () => { add.disabled = !(pick.value && (choice === "stack2" || packFactorOk(choice))); };
-    const [mode, factor] = packChoice("stack2", (v) => { choice = v; ready(); });
-    pick.addEventListener("change", ready);
-    add.addEventListener("click", () => {
-      const [did, key] = pick.value.split(PACK_SEP);
-      (state.packs[did] ||= {})[key] = choice;
-      renderPackGrid();
-    });
-    ready();
-    row.append(pick, mode, factor, add);
-    grid.appendChild(row);
-  }
+  const blockLabel = (g) => (g.key === "manual:add" ? t("blocks.manualAdd")
+    : g.block || t("pack.loose", { h: g.key.split(":").slice(1).join(":") }));
+  const blockTitle = (g) => `${g.no ? `${g.no}. ` : ""}${blockLabel(g)} · ${t("pack.item", { n: g.count, a: num(g.area_m2, 1) })}`;
 
   function readBlockPacking() {
     const out = {};
-    for (const [did, blocks] of Object.entries(state.packs || {})) out[did] = { ...blocks };
+    for (const [did, blocks] of Object.entries(state.packs || {})) {
+      const ok = Object.entries(blocks).filter(([, v]) => v === "stack2" || packFactorOk(v));
+      if (ok.length) out[did] = Object.fromEntries(ok);
+    }
     return out;
   }
+
+  function viewerHtml(d, col) {
+    const id = esc(d.id);
+    const groups = (col && col.block_groups) || [];
+    const stale = col && !col.block_groups;
+    const tools = d.editable ? `
+      <div class="viewer-tools">
+        <label class="chk"><input type="checkbox" data-act="labels"> ${esc(t("viewer.labels"))}</label>
+        <span class="seg" role="group" aria-label="${esc(t("viewer.zoom"))}">${ZOOMS.map((z) =>
+          `<button type="button" data-zoom="${z}">${esc(z === 1 ? t("viewer.fit") : `${z}×`)}</button>`).join("")}</span>
+        <span class="viewer-sep"></span>
+        <button type="button" data-act="add" class="mode-add">${esc(t("viewer.add"))}</button>
+        <button type="button" data-act="cut" class="mode-cut">${esc(t("viewer.cut"))}</button>
+      </div>
+      <div class="viewer-scroll"><div class="viewer-stage">
+        <img src="${esc(d.overlay_url)}" alt="${esc(t("drawing.overlayDxf"))}">
+        <svg class="viewer-svg" xmlns="${SVG_NS}" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div></div>
+      <div class="draw-ctl" hidden>
+        <span class="draw-hint"></span>
+        <input type="text" data-act="note" maxlength="200" placeholder="${esc(t("viewer.note"))}">
+        <button type="button" class="primary" data-act="finish">${esc(t("viewer.finish"))}</button>
+        <button type="button" data-act="undo">${esc(t("viewer.undo"))}</button>
+        <button type="button" class="link" data-act="cancel">${esc(t("viewer.cancel"))}</button>
+      </div>
+      <p class="note legend">${esc(t("viewer.legend"))}</p>
+      <div class="manual-box"></div>
+      <p class="error viewer-error" role="alert"></p>`
+      : `${figure(d.overlay_url, t("drawing.overlayDxf"), "overlay")}<p class="note">${esc(t("viewer.old"))}</p>`;
+    let table = "";
+    if (stale) table = `<p class="note">${esc(t("pack.stale"))}</p>`;
+    else if (groups.length) {
+      const set = Object.keys(state.packs[String(d.id)] || {}).length;
+      table = `<details class="block-table"${(state.view[d.id] || {}).tableOpen ? " open" : ""}>
+        <summary>${esc(t("blocks.title", { n: groups.filter((g) => g.key !== "manual:add").length, k: set }))}</summary>
+        <p class="note">${esc(t("pack.note"))}</p>
+        <div class="table-wrap block-scroll"><table class="blocks"><thead><tr>
+          <th class="num">${esc(t("blocks.no"))}</th><th>${esc(t("blocks.name"))}</th><th class="num">${esc(t("blocks.count"))}</th>
+          <th class="num">${esc(t("blocks.area"))}</th><th class="num">${esc(t("blocks.cum"))}</th><th>${esc(t("blocks.mode"))}</th>
+        </tr></thead><tbody></tbody></table></div>
+        <div class="actions"><button type="button" class="primary" data-act="apply">${esc(t("blocks.apply"))}</button>
+          <span class="ok block-msg" role="status"></span></div>
+      </details>`;
+    }
+    return `<div class="viewer" data-did="${id}">${tools}${table}</div>`;
+  }
+
+  function wireViewers(job) {
+    for (const el of document.querySelectorAll("#drawings .viewer")) {
+      const did = el.dataset.did;
+      const d = (job.results || []).find((r) => String(r.id) === did);
+      const col = ((job.estimate && job.estimate.drawings) || []).find((c) => String(c.id) === did);
+      const v = (state.view[did] ||= { zoom: 1, labels: true, tableOpen: false, hover: null });
+      renderBlockRows(el, did, col);
+      const details = el.querySelector("details.block-table");
+      if (details) details.addEventListener("toggle", () => { v.tableOpen = details.open; });
+      const apply = el.querySelector('[data-act="apply"]');
+      if (apply) {
+        apply.addEventListener("click", async () => {
+          v.flash = null;
+          if (await recalc()) v.flash = t("recalc.done");
+          const msgEl = document.querySelector(`#drawings .viewer[data-did="${CSS.escape(did)}"] .block-msg`);
+          if (msgEl && v.flash) msgEl.textContent = v.flash;
+        });
+      }
+      if (!d || !d.editable) continue;
+      wireViewerTools(el, did, v);
+      loadGeometry(job.id, did).then((geo) => { if (geo) { v.geo = geo; drawViewer(el, did); renderManualBox(el, did, d, geo); } })
+        .catch(() => { el.querySelector(".viewer-error").textContent = t("viewer.failed"); });
+    }
+  }
+
+  async function loadGeometry(jid, did, fresh = false) {
+    const key = `${jid}/${did}`;
+    if (!fresh && state.geo[key]) return state.geo[key];
+    const res = await fetch(`/api/jobs/${jid}/drawings/${encodeURIComponent(did)}/geometry`);
+    if (!res.ok) throw new Error(String(res.status));
+    return (state.geo[key] = await res.json());
+  }
+
+  function renderBlockRows(el, did, col) {
+    const body = el.querySelector("table.blocks tbody");
+    if (!body || !col) return;
+    const groups = col.block_groups || [];
+    const measured = groups.reduce((s, g) => s + (g.measured_m2 ?? g.gross_m2 ?? 0), 0) || 1;
+    const pack = Number(((state.job.estimate || {}).params || {}).packaging_factor) || 1;
+    let cum = 0;
+    body.textContent = "";
+    groups.forEach((g, i) => {
+      // 旧版本算的结果没有 no：同样按面积从大到小排列，序号即编号
+      const no = g.key === "manual:add" ? null : g.no || i + 1;
+      cum += g.measured_m2 ?? g.gross_m2 ?? 0;
+      const tr = document.createElement("tr");
+      tr.dataset.key = g.key;
+      tr.innerHTML = `<td class="num">${no ? esc(no) : "—"}</td><td class="name">${esc(blockLabel(g))}</td>
+        <td class="num">${esc(g.count)}</td><td class="num">${num(g.area_m2, 1)}</td>
+        <td class="num">${no ? `${num((cum / measured) * 100, 0)}%` : ""}</td><td class="mode"></td>`;
+      const cur = (state.packs[did] || {})[g.key];
+      const mode = document.createElement("select");
+      mode.setAttribute("aria-label", t("blocks.mode"));
+      mode.innerHTML = `<option value="">${esc(t("blocks.default", { f: num(pack, 2) }))}</option>
+        <option value="stack2">${esc(t("blocks.stack2", { f: num(pack / 2, 3) }))}</option>
+        <option value="custom">${esc(t("pack.custom"))}</option>`;
+      mode.value = cur === undefined ? "" : cur === "stack2" ? "stack2" : "custom";
+      const factor = document.createElement("input");
+      factor.type = "number"; factor.min = "0.05"; factor.max = "5"; factor.step = "0.05"; factor.inputMode = "decimal";
+      factor.placeholder = t("pack.factor"); factor.setAttribute("aria-label", t("pack.factor"));
+      factor.value = mode.value === "custom" ? cur : "";
+      factor.hidden = mode.value !== "custom";
+      const sync = () => {
+        factor.hidden = mode.value !== "custom";
+        factor.classList.toggle("invalid", mode.value === "custom" && factor.value !== "" && !packFactorOk(factor.value));
+        const packs = (state.packs[did] ||= {});
+        if (mode.value === "") delete packs[g.key];
+        else packs[g.key] = mode.value === "stack2" ? "stack2" : factor.value;
+        if (!Object.keys(packs).length) delete state.packs[did];
+        tr.classList.toggle("set", mode.value !== "");
+        state.packsDirty[did] = true;
+        const msgEl = el.querySelector(".block-msg");
+        if (msgEl) { msgEl.className = "amber block-msg"; msgEl.textContent = t("blocks.dirty"); }
+        drawViewer(el, did);
+      };
+      mode.addEventListener("change", sync);
+      factor.addEventListener("input", sync);
+      tr.classList.toggle("set", cur !== undefined);
+      tr.querySelector("td.mode").append(mode, factor);
+      tr.addEventListener("mouseenter", () => { (state.view[did] || {}).hover = g.key; drawViewer(el, did); });
+      tr.addEventListener("mouseleave", () => { (state.view[did] || {}).hover = null; drawViewer(el, did); });
+      body.appendChild(tr);
+    });
+    const v = state.view[did] || {};
+    const msgEl = el.querySelector(".block-msg");
+    if (msgEl && state.packsDirty[did]) { msgEl.className = "amber block-msg"; msgEl.textContent = t("blocks.dirty"); }
+    else if (msgEl && v.flash) { msgEl.textContent = v.flash; v.flash = null; }
+  }
+
+  function wireViewerTools(el, did, v) {
+    const svg = el.querySelector("svg.viewer-svg");
+    const labels = el.querySelector('[data-act="labels"]');
+    labels.checked = v.labels;
+    labels.addEventListener("change", () => { v.labels = labels.checked; drawViewer(el, did); });
+    for (const b of el.querySelectorAll("[data-zoom]")) {
+      b.addEventListener("click", () => { v.zoom = Number(b.dataset.zoom); applyZoom(el, v); drawViewer(el, did); });
+    }
+    applyZoom(el, v);
+    const startDraw = (op) => {
+      state.draw = { did, op, pts: [] };
+      updateDrawControls(el, did);
+      drawViewer(el, did);
+    };
+    el.querySelector('[data-act="add"]').addEventListener("click", () => startDraw("add"));
+    el.querySelector('[data-act="cut"]').addEventListener("click", () => startDraw("cut"));
+    el.querySelector('[data-act="cancel"]').addEventListener("click", () => { state.draw = null; updateDrawControls(el, did); drawViewer(el, did); });
+    el.querySelector('[data-act="undo"]').addEventListener("click", () => {
+      if (state.draw && state.draw.did === did) { state.draw.pts.pop(); updateDrawControls(el, did); drawViewer(el, did); }
+    });
+    el.querySelector('[data-act="finish"]').addEventListener("click", () => finishDraw(el, did));
+    svg.addEventListener("click", (ev) => {
+      if (state.draw && state.draw.did === did) {
+        const p = svgPoint(svg, ev);
+        const last = state.draw.pts[state.draw.pts.length - 1];
+        const k = pxPerScreen(el, v);
+        if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 3 * k) state.draw.pts.push(p);   // 双击时的重复点不算
+        updateDrawControls(el, did);
+        drawViewer(el, did);
+        return;
+      }
+      const hit = ev.target.closest("[data-key]");
+      if (hit) focusBlockRow(el, did, hit.dataset.key);
+    });
+    svg.addEventListener("dblclick", (ev) => { if (state.draw && state.draw.did === did) { ev.preventDefault(); finishDraw(el, did); } });
+    svg.addEventListener("mousemove", (ev) => {
+      if (state.draw && state.draw.did === did) { state.draw.cursor = svgPoint(svg, ev); drawLayer(el, did); return; }
+      const hit = ev.target.closest("[data-key]");
+      const key = hit ? hit.dataset.key : null;
+      if (key !== v.hover) { v.hover = key; drawViewer(el, did); }
+    });
+    svg.addEventListener("mouseleave", () => { if (v.hover) { v.hover = null; drawViewer(el, did); } });
+    updateDrawControls(el, did);
+  }
+
+  function applyZoom(el, v) {
+    el.querySelector(".viewer-stage").style.width = `${v.zoom * 100}%`;
+    for (const b of el.querySelectorAll("[data-zoom]")) b.setAttribute("aria-pressed", String(Number(b.dataset.zoom) === v.zoom));
+  }
+
+  // 叠加图像素 / 屏幕像素：标注字号、点击容差在屏幕上保持同样大小
+  function pxPerScreen(el, v) {
+    const w = el.querySelector(".viewer-stage").clientWidth || 1;
+    return ((v.geo && v.geo.width) || w) / w;
+  }
+
+  function svgPoint(svg, ev) {
+    const pt = svg.createSVGPoint();
+    pt.x = ev.clientX; pt.y = ev.clientY;
+    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    return [Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10];
+  }
+
+  function updateDrawControls(el, did) {
+    const on = state.draw && state.draw.did === did;
+    el.querySelector(".draw-ctl").hidden = !on;
+    el.querySelector('[data-act="add"]').setAttribute("aria-pressed", String(!!on && state.draw.op === "add"));
+    el.querySelector('[data-act="cut"]').setAttribute("aria-pressed", String(!!on && state.draw.op === "cut"));
+    el.querySelector(".viewer-stage").classList.toggle("drawing", !!on);
+    if (!on) return;
+    el.querySelector(".draw-hint").textContent = t(state.draw.op === "add" ? "viewer.hintAdd" : "viewer.hintCut", { n: state.draw.pts.length });
+    el.querySelector('[data-act="finish"]').disabled = state.draw.pts.length < 3;
+    el.querySelector('[data-act="undo"]').disabled = state.draw.pts.length === 0;
+  }
+
+  async function finishDraw(el, did) {
+    const draw = state.draw;
+    if (!draw || draw.did !== did || draw.pts.length < 3) return;
+    const errEl = el.querySelector(".viewer-error");
+    errEl.textContent = "";
+    el.querySelector('[data-act="finish"]').disabled = true;
+    try {
+      const res = await fetch(`/api/jobs/${state.job.id}/drawings/${encodeURIComponent(did)}/edits`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: draw.op, points_px: draw.pts, note: el.querySelector('[data-act="note"]').value }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { errEl.textContent = say(body.error) || `HTTP ${res.status}`; updateDrawControls(el, did); return; }
+      state.draw = null;
+      await afterEdit(body, did);
+    } catch (_) {
+      errEl.textContent = t("err.network");
+      updateDrawControls(el, did);
+    }
+  }
+
+  async function afterEdit(job, did) {
+    state.job = job;
+    await loadGeometry(job.id, did, true).catch(() => null);
+    renderJob(job);
+  }
+
+  async function withdrawEdit(did, eid) {
+    const res = await fetch(`/api/jobs/${state.job.id}/drawings/${encodeURIComponent(did)}/edits/${encodeURIComponent(eid)}`, { method: "DELETE" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(say(body.error) || `HTTP ${res.status}`);
+    await afterEdit(body, did);
+  }
+
+  function renderManualBox(el, did, d, geo) {
+    const box = el.querySelector(".manual-box");
+    const m = d.manual;
+    const head = m
+      ? `<p><b>${esc(t("manual.formula", { m: num(m.measured_m2, 1), a: num(m.added_m2, 1), c: num(m.cut_m2, 1), r: num(m.adjusted_m2, 1) }))}</b></p>`
+      : `<p class="note">${esc(t("manual.none"))}</p>`;
+    const items = geo.edits.map((e) => `<li data-eid="${esc(e.id)}"><span class="tag ${e.op === "add" ? "warn" : "bad"}">${esc(t(e.op === "add" ? "manual.add" : "manual.cut"))}</span>
+      ${esc(t("manual.item", { a: num(e.area_m2, 1), e: num(e.effect_m2, 1) }))}${e.note ? ` · ${esc(e.note)}` : ""}
+      <span class="muted">· ${esc(when(e.created_at))}</span>
+      <button type="button" class="link" data-act="withdraw">${esc(t("manual.withdraw"))}</button></li>`).join("");
+    box.innerHTML = `${head}${items ? `<ul class="edit-list">${items}</ul>` : ""}
+      <p class="note">${esc(t("manual.scope"))}${geo.withdrawn ? ` ${esc(t("manual.withdrawn", { n: geo.withdrawn }))}` : ""}</p>`;
+    for (const b of box.querySelectorAll('[data-act="withdraw"]')) {
+      b.addEventListener("click", async () => {
+        if (b.dataset.armed !== "1") {                      // 两步确认：避免误点（撤销后记录保留，但区域要重画）
+          b.dataset.armed = "1"; b.textContent = t("manual.confirm");
+          setTimeout(() => { if (b.isConnected) { b.dataset.armed = ""; b.textContent = t("manual.withdraw"); } }, 6000);
+          return;
+        }
+        b.disabled = true;
+        try { await withdrawEdit(did, b.closest("li").dataset.eid); }
+        catch (e) { el.querySelector(".viewer-error").textContent = e.message || t("err.network"); b.disabled = false; }
+      });
+    }
+  }
+
+  function focusBlockRow(el, did, key) {
+    const details = el.querySelector("details.block-table");
+    if (!details) return;
+    details.open = true;
+    (state.view[did] || {}).tableOpen = true;
+    const tr = [...details.querySelectorAll("tr[data-key]")].find((r) => r.dataset.key === key);
+    if (!tr) return;
+    tr.scrollIntoView({ block: "nearest" });
+    tr.classList.remove("flash"); void tr.offsetWidth; tr.classList.add("flash");
+    const sel = tr.querySelector("select");
+    if (sel) sel.focus({ preventScroll: true });
+  }
+
+  const ringPath = (ring) => `M${ring.map((p) => `${p[0]},${p[1]}`).join("L")}Z`;
+
+  // 标注位置：多边形面积加权的形心（凹形时可能落在轮廓外，不影响识别）
+  function ringCentroid(ring) {
+    let a = 0, cx = 0, cy = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const f = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+      a += f; cx += (ring[j][0] + ring[i][0]) * f; cy += (ring[j][1] + ring[i][1]) * f;
+    }
+    if (Math.abs(a) < 1e-9) return ring[0];
+    return [cx / (3 * a), cy / (3 * a)];
+  }
+  const ringArea = (ring) => Math.abs(ring.reduce((s, p, i) => { const q = ring[(i + 1) % ring.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+
+  function drawViewer(el, did) {
+    const v = state.view[did];
+    const svg = el.querySelector("svg.viewer-svg");
+    if (!v || !v.geo || !svg) return;
+    const geo = v.geo;
+    const col = ((state.job.estimate && state.job.estimate.drawings) || []).find((c) => String(c.id) === did);
+    const groups = new Map(((col && col.block_groups) || []).map((g) => [g.key, g]));
+    const packs = state.packs[did] || {};
+    const k = pxPerScreen(el, v);
+    svg.setAttribute("viewBox", `0 0 ${geo.width} ${geo.height}`);
+    const parts = [];
+    // 人工修正区域：黄 = 加入，红 = 剪掉
+    for (const e of geo.edits) parts.push(`<path class="edit-${e.op === "add" ? "add" : "cut"}" d="${ringPath(e.points_px)}" style="stroke-width:${1.5 * k}px"/>`);
+    // 设备外边界：透明，可悬停 / 点击；已指定包装方式的图块类型着色，悬停的整类高亮
+    for (const ins of geo.instances) {
+      const cls = v.hover === ins.key ? "inst hover" : packs[ins.key] === "stack2" ? "inst stack2" : packs[ins.key] !== undefined ? "inst custom" : "inst";
+      const g = groups.get(ins.key);
+      const title = g ? `<title>${esc(blockTitle(g))}</title>` : "";
+      parts.push(`<g class="${cls}" data-key="${esc(ins.key)}">${title}${ins.outline.map((r) => `<path d="${ringPath(r)}" style="stroke-width:${1.5 * k}px"/>`).join("")}</g>`);
+    }
+    if (v.labels) {
+      const r = 9 * k, fs = 11 * k;
+      for (const ins of geo.instances) {
+        const g = groups.get(ins.key);
+        if (!g || !g.no || !ins.outline.length) continue;
+        const ring = ins.outline.reduce((a, b) => (ringArea(b) > ringArea(a) ? b : a));
+        const [x, y] = ringCentroid(ring);
+        const cls = v.hover === ins.key ? "lbl hover" : packs[ins.key] === "stack2" ? "lbl stack2" : packs[ins.key] !== undefined ? "lbl custom" : "lbl";
+        const w = Math.max(2 * r, (String(g.no).length * 0.62 + 0.9) * fs);
+        parts.push(`<g class="${cls}" data-key="${esc(ins.key)}"><title>${esc(blockTitle(g))}</title>
+          <rect x="${x - w / 2}" y="${y - r}" width="${w}" height="${2 * r}" rx="${r}" style="stroke-width:${k}px"/>
+          <text x="${x}" y="${y}" style="font-size:${fs}px">${esc(g.no)}</text></g>`);
+      }
+    }
+    svg.innerHTML = `<g class="layer-main">${parts.join("")}</g><g class="layer-draw"></g>`;
+    drawLayer(el, did);
+  }
+
+  // 正在画的多边形单独一层：鼠标移动时只重画这一层
+  function drawLayer(el, did) {
+    const layer = el.querySelector("svg.viewer-svg .layer-draw");
+    const v = state.view[did];
+    if (!layer || !v) return;
+    const draw = state.draw && state.draw.did === did ? state.draw : null;
+    if (!draw || !draw.pts.length) { layer.innerHTML = ""; return; }
+    const k = pxPerScreen(el, v);
+    const pts = draw.cursor ? [...draw.pts, draw.cursor] : draw.pts;
+    layer.innerHTML = `<polyline class="drawing-${draw.op}" points="${pts.map((p) => p.join(",")).join(" ")}" style="stroke-width:${2 * k}px"/>`
+      + draw.pts.map((p) => `<circle class="vertex" cx="${p[0]}" cy="${p[1]}" r="${4 * k}" style="stroke-width:${k}px"/>`).join("");
+  }
+
 
   function readParams(grid) {
     const out = {};
@@ -751,10 +1026,11 @@
       const res = await fetch(`/api/jobs/${id}`);
       const body = await res.json();
       if (!res.ok) { state.job = null; showNoJob(say(body.error)); return; }
+      if (!state.job || state.job.id !== body.id) { state.view = {}; state.draw = null; }
       state.job = body;
       buildParamGrid($("recalcGrid"), body.params);
       buildFrameGrid(body);
-      buildPackGrid(body);
+      initPacks(body);
       $("recalcMsg").textContent = ""; $("recalcError").textContent = "";
       renderJob(body);
       loadRecent();
@@ -772,9 +1048,10 @@
       if (!res.ok) { showNoJob(say(body.error)); return; }
       state.pollFailures = 0;
       state.job = body;
+      if (!isRunning()) initPacks(body);
       renderJob(body);
       if (isRunning()) state.pollTimer = setTimeout(() => poll(id), POLL_MS);
-      else { buildParamGrid($("recalcGrid"), body.params); buildFrameGrid(body); buildPackGrid(body); loadRecent(); loadLibrary(); loadSystem(); }
+      else { buildParamGrid($("recalcGrid"), body.params); buildFrameGrid(body); loadRecent(); loadLibrary(); loadSystem(); }
     } catch (_) {
       state.pollFailures += 1;
       if (state.pollFailures >= 3) $("progressText").textContent = t("err.network");
@@ -910,7 +1187,9 @@
         ? t("row.labor_hours", { basis: t(`basis.${job.estimate.params.labor_area_basis}`) }) : t(`row.${key}`);
       html += `<tr class="${isKey ? "key" : ""}"><td>${esc(label)}</td>`;
       for (const c of cols) {
-        const src = key === "fine_m2" && c.fine_source === "footprint" ? `<span class="src">${esc(t("fine.fromFootprint"))}</span>`
+        const src = key === "fine_m2" && (c.manual_added_m2 || c.manual_cut_m2)
+          ? `<span class="src">${esc(t("fine.manual", { a: num(c.manual_added_m2, 1), c: num(c.manual_cut_m2, 1) }))}</span>`
+          : key === "fine_m2" && c.fine_source === "footprint" ? `<span class="src">${esc(t("fine.fromFootprint"))}</span>`
           : key === "frame_boxes_mid" && c.frame_source === "count" ? `<span class="src">${esc(t("frame.fromCount"))}</span>`
           : key === "packed_m2" && c.packing_source === "blocks" ? `<span class="src">${esc(t("pack.fromBlocks"))}</span>` : "";
         html += `<td class="num">${fmt(c[key], kind)}${src}</td>`;
@@ -936,7 +1215,7 @@
     const host = $("drawings");
     host.innerHTML = (job.results || []).map((d, i) => {
       const input = job.drawings[i] || {};
-      if (d.source === "dxf") return renderDxfDrawing(d, input);
+      if (d.source === "dxf") return renderDxfDrawing(d, input, (job.estimate.drawings || []).find((c) => String(c.id) === String(d.id)));
       const scaleSrc = input.mm_per_pt ? t("drawing.scaleManual") : t("drawing.scaleAuto", { ref: num(d.reference_length_mm, 0) });
       const refSrc = input.reference_source === "library" ? t("drawing.refLibrary") : t("drawing.refUser");
       const reused = input.reused ? `<span class="tag ok">${esc(t("drawing.reused", { when: when(input.reused_from) }))}</span>` : "";
@@ -970,10 +1249,12 @@
       </section>`;
     }).join("");
     wireLightbox(host);
+    wireViewers(job);
   }
 
-  // DXF：单位及其来源、单列的移动/待定面积；叠加图颜色与 PDF 不同（绿 = 计入）
-  function renderDxfDrawing(d, input) {
+  // DXF：单位及其来源、单列的移动/待定面积；叠加图颜色与 PDF 不同（绿 = 计入）；
+  // 叠加图可缩放，图上标图块编号，可画区域人工加入 / 剪掉；下面是按图块的包装方式表
+  function renderDxfDrawing(d, input, col) {
     const reused = input.reused ? `<span class="tag ok">${esc(t("drawing.reused", { when: when(input.reused_from) }))}</span>` : "";
     const lanes = d.envelope.lanes.map((l) => `<tr><td>${esc(l.lane)}</td><td class="num">${num(l.length_m)}</td>
       <td class="num">${num(l.width_m)}</td><td class="num">${num(l.length_m * l.width_m)}</td><td class="num">${num(l.footprint_m2)}</td></tr>`).join("");
@@ -989,7 +1270,7 @@
         <span>${esc(t("drawing.groups"))}: <b>${num(d.n_groups, 0)}</b></span>
         <span>${esc(t("drawing.lineRegion"))}: ${esc(d.line_region_basis || "—")}</span>
       </div>
-      <div class="figs">${figure(d.overlay_url, t("drawing.overlayDxf"), "overlay")}</div>
+      ${viewerHtml(d, col)}
       <h3>${esc(t("drawing.lanes"))}</h3>
       <div class="table-wrap"><table><thead><tr><th>${esc(t("lane.lane"))}</th><th class="num">${esc(t("lane.length"))}</th>
         <th class="num">${esc(t("lane.width"))}</th><th class="num">${esc(t("lane.area"))}</th><th class="num">${esc(t("lane.footprint"))}</th></tr></thead>
@@ -1066,6 +1347,9 @@
       img.src = await toDataUrl(img.getAttribute("src"));
       img.removeAttribute("loading");
     }
+    // 报告是静态文件：去掉缩放、画区域、包装方式表等交互部分，保留图上的编号与修正区域
+    drawings.querySelectorAll(".viewer-tools, .block-table, .viewer-error, .edit-list button").forEach((n) => n.remove());
+    drawings.querySelectorAll(".viewer-stage").forEach((n) => { n.style.width = "100%"; });
     // 报告是静态文件，没有“点击放大”
     drawings.querySelectorAll("figure[data-kind]").forEach((fig) => {
       fig.querySelector("figcaption").textContent = t(fig.dataset.kind === "stations" ? "report.stationCaption" : "report.overlayCaption");
@@ -1132,7 +1416,7 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
 
   // ------------------------------------------------------------ 重新计算参数
   async function recalc() {
-    if (!state.job) return;
+    if (!state.job) return false;
     const btn = $("recalcBtn");
     $("recalcMsg").textContent = ""; $("recalcError").textContent = "";
     btn.disabled = true;
@@ -1142,14 +1426,16 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
         body: JSON.stringify({ params: { ...readParams($("recalcGrid")), frame_boxes: readFrameBoxes(), block_packing: readBlockPacking() } }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) { $("recalcError").textContent = say(body.error) || `HTTP ${res.status}`; return; }
+      if (!res.ok) { $("recalcError").textContent = say(body.error) || `HTTP ${res.status}`; return false; }
       state.job = body;
+      initPacks(body);
       renderJob(body);
       buildFrameGrid(body);
-      buildPackGrid(body);
       $("recalcMsg").textContent = t("recalc.done");
+      return true;
     } catch (_) {
       $("recalcError").textContent = t("err.network");
+      return false;
     } finally {
       btn.disabled = false;
     }
@@ -1298,6 +1584,21 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
     $("newBtn").addEventListener("click", () => { history.pushState(null, "", location.pathname); route(); $("uploadCard").scrollIntoView({ behavior: "smooth" }); });
     $("lightbox").addEventListener("click", (e) => { if (e.target === $("lightbox")) $("lightbox").close(); });
     window.addEventListener("hashchange", route);
+    // 画修正区域时：Esc 取消，Enter 完成，Backspace 撤回一点（在输入框里打字时不拦截）
+    document.addEventListener("keydown", (e) => {
+      if (!state.draw || ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
+      const el = document.querySelector(`#drawings .viewer[data-did="${CSS.escape(state.draw.did)}"]`);
+      if (!el) return;
+      if (e.key === "Escape") { state.draw = null; updateDrawControls(el, el.dataset.did); drawViewer(el, el.dataset.did); }
+      else if (e.key === "Enter") { e.preventDefault(); finishDraw(el, el.dataset.did); }
+      else if (e.key === "Backspace") { e.preventDefault(); state.draw.pts.pop(); updateDrawControls(el, el.dataset.did); drawViewer(el, el.dataset.did); }
+    });
+    // 窗口宽度变化后，图上标注按新的显示比例重画（字号在屏幕上保持不变）
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => document.querySelectorAll("#drawings .viewer").forEach((el) => drawViewer(el, el.dataset.did)), 150);
+    });
   }
 
   async function start() {

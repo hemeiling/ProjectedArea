@@ -34,6 +34,7 @@ from webapp import jobs as J
 from webapp.library import Library
 from webapp.messages import msg
 import estimate
+import manual_edits
 
 MAX_DRAWINGS = 30
 MAX_FILE_MB = 100            # 单个 PDF
@@ -376,6 +377,76 @@ def create_app(data_dir=None, desktop=False):
             except J.Failed as e:
                 raise ApiError(500, e.message)
         return JSONResponse(_job_view(job), headers=NO_CACHE)
+
+    # ------------------------------------------------------------ 叠加图上的图块编号与人工修正（DXF）
+    def _editable_result(jid, did):
+        job = _job_or_404(jid)
+        if job["status"] != "done":
+            raise ApiError(409, msg("job_not_ready"))
+        drawing = next((d for d in job["drawings"] if d["id"] == did), None)
+        if drawing is None:
+            raise ApiError(404, msg("job_not_found"))
+        with open(os.path.join(store.dir(jid), "results", "results.json"), encoding="utf-8") as f:
+            result = next(r for r in json.load(f)["drawings"] if r["id"] == did)
+        if not J.editable(result):
+            raise ApiError(409, msg("edit_not_editable"))
+        return job, drawing, result
+
+    @app.get("/api/jobs/{jid}/drawings/{did}/geometry")
+    def drawing_geometry(jid: str, did: str):
+        """叠加图像素坐标中的计入设备外边界（带图块分组键）与生效的人工修正区域"""
+        _, drawing, result = _editable_result(jid, did)
+        canvas = result["overlay_canvas"]
+        instances = [dict(handle=r["handle"], key=r["block"] if r.get("block") else f"loose:{r['handle']}",
+                          outline=r["outline_px"])
+                     for r in result.get("inserts") or [] if r.get("cls") == "equipment" and r.get("outline_px")]
+        effects = {e["id"]: e for e in (result.get("manual") or {}).get("edits", [])}
+        edits = [dict({k: v for k, v in e.items() if k != "points"}, points_px=manual_edits.to_px(e["points"], canvas),
+                      area_m2=effects.get(e["id"], {}).get("area_m2"), effect_m2=effects.get(e["id"], {}).get("effect_m2"))
+                 for e in lib.active_edits(drawing["sha256"])]
+        withdrawn = sum(1 for e in lib.edits(drawing["sha256"]) if e.get("withdrawn_at"))
+        return JSONResponse(dict(width=canvas["width"], height=canvas["height"], instances=instances, edits=edits,
+                                 withdrawn=withdrawn), headers=NO_CACHE)
+
+    def _recalc(jid):
+        with recalc_lock:
+            try:
+                job = J.recalculate(store, lib, jid, _job_or_404(jid)["params"])
+            except J.Failed as e:
+                raise ApiError(500, e.message)
+        return JSONResponse(_job_view(job), headers=NO_CACHE)
+
+    @app.post("/api/jobs/{jid}/drawings/{did}/edits")
+    def add_edit(jid: str, did: str, payload: dict = Body(...)):
+        """在叠加图上画的区域（像素坐标）-> 图纸坐标，存入图纸库（绑定文件哈希），再重算本任务"""
+        _, drawing, result = _editable_result(jid, did)
+        canvas = result["overlay_canvas"]
+        op, pts, note = payload.get("op"), payload.get("points_px"), str(payload.get("note") or "").strip()
+        if op not in manual_edits.OPS:
+            raise ApiError(400, msg("edit_bad", detail="op"))
+        try:
+            pts = [[float(x), float(y)] for x, y in pts]
+        except (TypeError, ValueError):
+            raise ApiError(400, msg("edit_bad", detail="points_px"))
+        if not manual_edits.MIN_POINTS <= len(pts) <= manual_edits.MAX_POINTS or any(
+                not (-canvas["width"] <= x <= 2 * canvas["width"] and -canvas["height"] <= y <= 2 * canvas["height"])
+                for x, y in pts):
+            raise ApiError(400, msg("edit_bad", detail="points_px"))
+        world = manual_edits.to_world(pts, canvas)
+        if manual_edits.polygon(world) is None:
+            raise ApiError(400, msg("edit_bad", detail="no area"))
+        lib.add_edit(drawing["sha256"], dict(id=secrets.token_hex(4), op=op, note=note[:manual_edits.MAX_NOTE],
+                                             points=[[round(x, 3), round(y, 3)] for x, y in world],
+                                             unit_mm=result["unit_mm"], job=jid, drawing_name=drawing["name"]))
+        return _recalc(jid)
+
+    @app.delete("/api/jobs/{jid}/drawings/{did}/edits/{eid}")
+    def withdraw_edit(jid: str, did: str, eid: str):
+        """撤销一条修正：图纸库中保留记录（撤销时间、任务），不再生效"""
+        _, drawing, _ = _editable_result(jid, did)
+        if not lib.withdraw_edit(drawing["sha256"], eid, jid):
+            raise ApiError(404, msg("edit_not_found"))
+        return _recalc(jid)
 
     app.mount("/static", RevalidatedStatic(directory=STATIC_DIR), name="static")
     return app

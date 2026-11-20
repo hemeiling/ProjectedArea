@@ -65,6 +65,28 @@ def test_rotated_mirrored_and_flipped_instances_have_the_block_area(tmp_path, co
     assert r["footprint_m2"] == pytest.approx(9.5, rel=0.02)
 
 
+def test_overlay_outlines_land_on_each_transformed_instance(tmp_path, conf):
+    # 页面上的图块编号与人工修正都靠 overlay_canvas + outline_px 定位：换回图纸坐标后必须落在各插入的实际位置
+    import manual_edits as M
+    from ezdxf import bbox as ezbbox
+    doc = make_doc()
+    msp = doc.modelspace()
+    refs = [msp.add_blockref("MACHINE", (0, 0)),
+            msp.add_blockref("MACHINE", (5000, 0), dxfattribs=dict(rotation=90)),
+            msp.add_blockref("MACHINE", (10000, 0), dxfattribs=dict(xscale=-1)),
+            msp.add_blockref("MACHINE", (15000, 0), dxfattribs=dict(extrusion=(0, 0, -1), rotation=30)),
+            msp.add_blockref("MACHINE", (20000, 0), dxfattribs=dict(xscale=1.5, yscale=0.5))]
+    r = run(doc, tmp_path, conf)
+    canvas = r["overlay_canvas"]
+    assert canvas["width"] == D.OVERLAY_MAX_PX + 1 or canvas["height"] == D.OVERLAY_MAX_PX + 1
+    tol = 2 / canvas["scale"]                                           # 简化 1 像素 + 取整
+    for ref, row in zip(refs, r["inserts"]):
+        g = M.outline_world(row, canvas)
+        e = ezbbox.extents([ref])
+        assert g.bounds == pytest.approx((e.extmin.x, e.extmin.y, e.extmax.x, e.extmax.y), abs=tol)
+        assert g.area * 1e-6 == pytest.approx(row["area_m2"], rel=0.03)
+
+
 def test_overlapping_instances_are_counted_once(tmp_path, conf):
     doc = make_doc()
     doc.modelspace().add_blockref("MACHINE", (0, 0))

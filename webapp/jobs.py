@@ -9,6 +9,8 @@
 PDF 未填写标注总尺寸时，沿用该文件上次的标注尺寸；从未填写过则停下来请用户填写（附提示图）。
 DXF 单位：文件声明（$INSUNITS）> 用户上传时选择 > config.yaml 中按文件哈希核对过的记录 > 该文件上次的单位；
 都没有则停下来请用户选择，绝不默认为 mm。按文件哈希核对过的人工分类（overrides）只用于同一文件。
+DXF 的人工修正区域（加入 / 剪掉）同样按文件哈希保存在图纸库，每次计算、重新计算时套用（manual_edits.py），
+测量面积本身不变，修正单独记在 results.json 该图的 manual 中。
 
 每个任务一个私有目录 <data>/jobs/<id>/：
     config.yaml       本任务的配置（图纸 + 参数），可直接用于命令行复现
@@ -32,6 +34,7 @@ import uuid
 
 import pymupdf
 import yaml
+from shapely import wkt
 
 from webapp import dxfinfo
 from webapp.messages import msg
@@ -42,6 +45,7 @@ ESTIMATOR_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ESTIMATOR_DIR not in sys.path:      # 打包后已在路径中；重复加到最前面会让 OpenCV 的加载器递归导入自身
     sys.path.insert(0, ESTIMATOR_DIR)
 import estimate  # noqa: E402  (estimator 目录在上面加入路径)
+import manual_edits  # noqa: E402
 from webapp import dimension  # noqa: E402
 
 log = logging.getLogger("layout_estimator.web")
@@ -415,6 +419,28 @@ def _result_warnings(results, ocr):
     return out
 
 
+def editable(r):
+    """能否在叠加图上人工修正：DXF，且测量结果带叠加图坐标和矢量轮廓（旧版本测量的结果没有）"""
+    return r.get("source") == dxfinfo.DXF and bool(r.get("overlay_canvas")) and bool(r.get("footprint_wkt"))
+
+
+def attach_manual(lib, drawings, results, results_dir):
+    """把图纸库中各文件生效的人工修正套用到本任务的测量结果上（results 原地修改：加上或去掉 manual）"""
+    for d, r in zip(drawings, results):
+        active = lib.active_edits(d["sha256"]) if editable(r) else []
+        if not active:
+            r.pop("manual", None)
+            continue
+        with open(os.path.join(results_dir, r["footprint_wkt"]), encoding="utf-8") as f:
+            footprint = wkt.loads(f.read())
+        r["manual"] = manual_edits.apply(footprint, active, r["unit_mm"], r.get("inserts") or [], r["overlay_canvas"])
+
+
+def _write_results(results_dir, extraction, results):
+    with open(os.path.join(results_dir, "results.json"), "w", encoding="utf-8") as f:
+        json.dump(dict(extraction=extraction, drawings=results), f, ensure_ascii=False, indent=1)
+
+
 def public_results(results):
     """results.json 中给界面用的部分（不含服务器路径、像素分组、逐个插入的明细）"""
     keep = ("id", "name", "reference_length_mm", "mm_per_pt", "building_box_m", "agv_circles_removed",
@@ -430,7 +456,9 @@ def public_results(results):
                      transform_check_failures=len(d.get("transform_check_failures") or []),
                      line_region_basis=(d.get("line_region") or {}).get("basis"),
                      n_equipment=sum(r["cls"] == "equipment" for r in rows),
-                     n_excluded=sum(r["cls"] == "excluded" for r in rows))
+                     n_excluded=sum(r["cls"] == "excluded" for r in rows),
+                     editable=editable(d), manual={k: v_ for k, v_ in d["manual"].items() if k != "kept"}
+                     if d.get("manual") else None)
         out.append(v)
     return out
 
@@ -488,8 +516,8 @@ def run_job(store, lib, jid):
                 entries[r["id"]] = r
                 lib.store(keys[r["id"]], r, results_dir, jid)
         results = [entries[d["id"]] for d in drawings]
-        with open(os.path.join(results_dir, "results.json"), "w", encoding="utf-8") as f:
-            json.dump(dict(extraction=cfg["extraction"], drawings=results), f, ensure_ascii=False, indent=1)
+        attach_manual(lib, drawings, results, results_dir)
+        _write_results(results_dir, cfg["extraction"], results)
 
         # 3. 工作簿与汇总（config.yaml 写全部图纸，便于命令行复现）
         store.update(jid, stage="workbook")
@@ -525,14 +553,20 @@ def _combine_usage(a, b):
 
 
 def recalculate(store, lib, jid, params):
-    """只改业务参数：重写 config、重建工作簿、重算汇总；不重新测量面积。"""
+    """改业务参数或人工修正之后：套用图纸库中最新的人工修正、重写 config、重建工作簿、重算汇总；
+    不重新测量面积。"""
     job = store.get(jid)
     job["params"] = params
     cfg = _job_cfg(job, job["ocr"])
-    with open(os.path.join(store.dir(jid), "results", "results.json"), encoding="utf-8") as f:
-        results = json.load(f)["drawings"]
+    results_dir = os.path.join(store.dir(jid), "results")
+    with open(os.path.join(results_dir, "results.json"), encoding="utf-8") as f:
+        saved = json.load(f)
+    results = saved["drawings"]
+    attach_manual(lib, job["drawings"], results, results_dir)
+    _write_results(results_dir, saved.get("extraction"), results)
     build_workbook(store, jid, _job_config(store, lib, jid, cfg, job["drawings"]))
-    return store.update(jid, params=params, estimate=estimate.estimate(results, params, cfg))
+    return store.update(jid, params=params, results=public_results(results),
+                        estimate=estimate.estimate(results, params, cfg))
 
 
 class Worker:

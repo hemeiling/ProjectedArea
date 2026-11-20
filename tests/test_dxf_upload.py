@@ -82,7 +82,7 @@ def test_dxf_with_declared_units_end_to_end(client_dir, tmp_path):
     e2 = r.json()["estimate"]["drawings"][0]
     assert e2["packing_source"] == "blocks" and e2["packed_m2"] == pytest.approx(e["packed_m2"] / 2)
     wb = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))
-    assert "图块包装" in wb.sheetnames and wb["图块包装"]["B5"].value == "MACHINE" and wb["图块包装"]["E5"].value == "可叠 2 层"
+    assert "图块包装" in wb.sheetnames and wb["图块包装"]["B5"].value == "1. MACHINE" and wb["图块包装"]["E5"].value == "可叠 2 层"
 
 
 def test_undeclared_units_ask_then_remember(client_dir, tmp_path):
@@ -160,3 +160,52 @@ def test_pdf_and_dxf_in_one_estimate(client_dir, tmp_path, layout_pdf):
     assert [d["source"] for d in job["results"]] == ["pdf", "dxf"]
     assert job["estimate"]["total"]["fine_m2"] == pytest.approx(sum(d["footprint_m2"] for d in job["results"]))
     assert job["resources"]["measure"]["drawings"] == 2
+
+
+def test_manual_add_and_cut_regions_follow_the_file(client_dir, tmp_path):
+    # 叠加图上画区域：加入空地 2 m²、剪掉第一台设备的一半 1 m²；修正绑定文件哈希、撤销保留记录
+    import json
+    import manual_edits as M
+    client = client_dir
+    data = dxf_bytes(tmp_path)
+    job = wait_for(client, upload(client, data).json()["job_id"])
+    jid, did = job["id"], job["drawings"][0]["id"]
+    measured = job["results"][0]["footprint_m2"]
+    assert job["results"][0]["editable"] and job["results"][0]["manual"] is None
+
+    geo = client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()
+    assert len(geo["instances"]) == MACHINES and {i["key"] for i in geo["instances"]} == {"MACHINE"}
+    assert geo["edits"] == [] and geo["width"] > 0 and geo["height"] > 0
+    with open(os.path.join(client.app_data_dir, "jobs", jid, "results", "results.json"), encoding="utf-8") as f:
+        canvas = json.load(f)["drawings"][0]["overlay_canvas"]
+    px = lambda x0, y0, x1, y1: M.to_px([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], canvas)
+
+    r = client.post(f"/api/jobs/{jid}/drawings/{did}/edits", json=dict(op="add", points_px=px(6000, 0, 8000, 1000), note="漏识别的托架"))
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/jobs/{jid}/drawings/{did}/edits", json=dict(op="cut", points_px=px(0, 0, 1000, 1000)))
+    job = r.json()
+    e, man = job["estimate"]["drawings"][0], job["results"][0]["manual"]
+    assert man["added_m2"] == pytest.approx(2.0, rel=0.01) and man["cut_m2"] == pytest.approx(1.0, rel=0.02)
+    assert e["fine_m2"] == pytest.approx(measured + 2.0 - 1.0, abs=0.1) and e["fine_measured_m2"] == pytest.approx(measured, abs=0.1)
+    g = {x["key"]: x for x in e["block_groups"]}
+    assert g[J.estimate.MANUAL_ADD_KEY]["area_m2"] == pytest.approx(2.0, rel=0.01)
+    assert g["MACHINE"]["area_m2"] == pytest.approx(measured - 1.0, abs=0.1)
+    wb = load_workbook(io.BytesIO(client.get(job["workbook_url"]).content))
+    assert "人工修正" in wb.sheetnames and "'人工修正'!$E$5" in wb["汇总"]["B9"].value
+    assert wb["人工修正"]["E5"].value == "=B5+C5-D5"
+
+    # 同一文件的新计算自动沿用；撤销后不再生效，但记录还在
+    job2 = wait_for(client, submit_rows(client, [dict(sha256=sha256_bytes(data))]).json()["job_id"])
+    assert job2["estimate"]["drawings"][0]["fine_m2"] == pytest.approx(e["fine_m2"], abs=1e-6)
+    geo = client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()
+    add_id = next(x["id"] for x in geo["edits"] if x["op"] == "add")
+    assert next(x for x in geo["edits"] if x["op"] == "add")["note"] == "漏识别的托架"
+    r = client.delete(f"/api/jobs/{jid}/drawings/{did}/edits/{add_id}")
+    assert r.status_code == 200 and r.json()["estimate"]["drawings"][0]["fine_m2"] == pytest.approx(measured - 1.0, abs=0.1)
+    assert client.delete(f"/api/jobs/{jid}/drawings/{did}/edits/{add_id}").status_code == 404
+    geo = client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()
+    assert [x["op"] for x in geo["edits"]] == ["cut"] and geo["withdrawn"] == 1
+
+    for bad in (dict(op="grow", points_px=px(0, 0, 1, 1)), dict(op="add", points_px=[[0, 0], [1, 1]]),
+                dict(op="add", points_px=[[0, 0], [10, 0], [20, 0]]), dict(op="add", points_px="x")):
+        assert client.post(f"/api/jobs/{jid}/drawings/{did}/edits", json=bad).status_code == 400

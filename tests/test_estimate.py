@@ -171,6 +171,23 @@ def test_block_groups_split_overlap_by_gross_area():
     assert estimate.block_groups(dict(d, stations=[dict(footprint_m2=90.0)])) == []   # PDF 按工位分摊时不分图块
 
 
+def test_block_groups_numbered_and_follow_manual_corrections(cfg):
+    # 编号按测量面积从大到小（与叠加图标注一致）；人工剪掉的部分从被剪的插入中扣除；人工加入单独一组
+    d = dict(dxf_drawing(90.0, [("1", "A", "equipment", 60.0), ("2", "B", "equipment", 40.0)]), id="103")
+    assert [(g["no"], g["key"]) for g in estimate.block_groups(d)] == [(1, "A"), (2, "B")]
+    d["manual"] = dict(measured_m2=90.0, added_m2=12.0, cut_m2=27.0, adjusted_m2=75.0, blocks_m2=63.0,
+                       manual_add_m2=12.0, n_add=1, n_cut=1, kept={"1": 0.5}, edits=[])
+    g = {x["key"]: x for x in estimate.block_groups(d)}
+    assert (g["A"]["no"], g["B"]["no"]) == (1, 2)                     # 剪切后 A 毛面积变小，编号不变
+    assert g["A"]["area_m2"] == pytest.approx(63.0 * 30 / 70) and g["B"]["area_m2"] == pytest.approx(63.0 * 40 / 70)
+    assert g[estimate.MANUAL_ADD_KEY]["area_m2"] == 12.0 and g[estimate.MANUAL_ADD_KEY]["no"] is None
+    assert sum(x["area_m2"] for x in g.values()) == pytest.approx(75.0)
+    e = estimate.summarize(d, estimate.read_params(cfg), cfg)
+    assert e["fine_m2"] == 75.0 and e["fine_measured_m2"] == 90.0
+    assert (e["manual_added_m2"], e["manual_cut_m2"]) == (12.0, 27.0)
+    assert e["packed_m2"] == pytest.approx(75.0 * cfg["packing"]["packaging_factor"])
+
+
 def test_block_packing_stack2_and_custom_factor(cfg):
     d = dict(dxf_drawing(90.0, [("1", "A", "equipment", 60.0), ("2", "B", "equipment", 40.0)]), id="103")
     base = estimate.summarize(d, estimate.read_params(cfg), cfg)

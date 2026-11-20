@@ -174,7 +174,8 @@ if BP:
                 continue
             v = chosen[g["key"]]
             put(bp, f"A{r}", str(d["id"]), "@")
-            put(bp, f"B{r}", g["block"] or f"散线设备 {g['key'].split(':', 1)[1]}")
+            put(bp, f"B{r}", "人工加入区域" if g["key"] == estimate.MANUAL_ADD_KEY
+                else f"{g['no']}. " + (g["block"] or f"散线设备 {g['key'].split(':', 1)[1]}"))
             put(bp, f"C{r}", g["count"], "0")
             put(bp, f"D{r}", round(g["area_m2"], 2), "#,##0.0", BLUE)
             put(bp, f"E{r}", "可叠 2 层" if v == estimate.STACK2 else "自定义")
@@ -185,6 +186,37 @@ if BP:
             put(bp, f"G{r}", f"=D{r}*F{r}", "#,##0.0"); r += 1
     bp_last = r - 1
     for c, w in zip("ABCDEFG", [10, 34, 8, 16, 12, 12, 18]): bp.column_dimensions[c].width = w
+
+# ===================================================== 人工修正（DXF：在叠加图上加入 / 剪掉的区域）
+MAN = [d for d in D if d.get("manual")]
+MAN_ROW = {}
+if MAN:
+    mn = wb.create_sheet("人工修正")
+    mn["A1"] = "人工修正的投影面积（在网页叠加图上画出的区域；测量面积本身不变）"; mn["A1"].font = F(bold=True, size=13)
+    mn["A2"] = ("修正后面积 = 测量面积 + 加入 − 剪掉。加入 = 加入区域中原来没有计入的部分；剪掉 = 剪掉区域与已计入部分的交集，"
+                "同一处既加又剪时以剪掉为准。修正按图纸文件的 SHA-256 保存，文件改版后不会自动套用。"); mn["A2"].font = NOTE
+    header(mn, 4, ["图纸", "测量面积 (m²)", "人工加入 (m²)", "人工剪掉 (m²)", "修正后面积 (m²)"])
+    r = 5
+    for d in MAN:
+        m = d["manual"]
+        put(mn, f"A{r}", str(d["id"]), "@")
+        put(mn, f"B{r}", m["measured_m2"], "#,##0.0", BLUE)
+        put(mn, f"C{r}", m["added_m2"], "#,##0.0", BLUE)
+        put(mn, f"D{r}", m["cut_m2"], "#,##0.0", BLUE)
+        put(mn, f"E{r}", f"=B{r}+C{r}-D{r}", "#,##0.0", BOLD)
+        MAN_ROW[str(d["id"])] = r; r += 1
+    r += 1
+    header(mn, r, ["图纸", "操作", "区域面积 (m²)", "单独效果 (m²)", "备注", "时间", "记录编号"]); r += 1
+    for d in MAN:
+        for e in d["manual"]["edits"]:
+            put(mn, f"A{r}", str(d["id"]), "@")
+            put(mn, f"B{r}", "加入" if e["op"] == "add" else "剪掉")
+            put(mn, f"C{r}", e["area_m2"], "#,##0.0")
+            put(mn, f"D{r}", e["effect_m2"], "#,##0.0")
+            put(mn, f"E{r}", e.get("note") or "")
+            put(mn, f"F{r}", (e.get("created_at") or "")[:16].replace("T", " "))
+            put(mn, f"G{r}", e.get("id") or "", "@"); r += 1
+    for c, w in zip("ABCDEFG", [10, 16, 16, 16, 40, 18, 12]): mn.column_dimensions[c].width = w
 
 # ===================================================== 汇总
 sm = wb.create_sheet("汇总", 0)
@@ -250,7 +282,8 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
                   + "+SUMIF('图块包装'!$A$5:$A${bp_last},{c}5,'图块包装'!$G$5:$G${bp_last})")
         else:
             f_ = ALT[key] if own and key in ALT else f
-        v = f_.format(c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=d["footprint_m2"], bp_last=bp_last)
+        fp = f"'人工修正'!$E${MAN_ROW[str(d['id'])]}" if str(d["id"]) in MAN_ROW else d["footprint_m2"]
+        v = f_.format(c=c, R=R, id_lit=d["id"], mmpt=mmpt, st_last=st_last, ln_last=ln_last, fp=fp, bp_last=bp_last)
         if v.replace(".", "").isdigit():
             v = float(v) if "." in v else v
         cell = put(sm, f"{c}{rr}", v, fmt, BOLD if hi else F(), KEY if hi else None)
@@ -259,6 +292,8 @@ for (key, lab, f, fmt, note, summ, hi) in lines:
     elif key == "ratio":
         put(sm, f"{TOT}{rr}", f"=IF({TOT}{R['base']}=0,\"-\",{TOT}{R['fine']}/{TOT}{R['base']})", fmt)
     note_ = FRAME_NOTE if key == "frame" and FB else note
+    if key == "fine" and MAN_ROW:
+        note_ = note + "；" + "、".join(MAN_ROW) + " 含人工修正（见『人工修正』页）"
     if key == "packed" and BP:
         note_ = "精细面积 × 包装系数；" + "、".join(BP) + " 中人工指定了包装方式的图块按『图块包装』页的系数"
     sm.cell(rr, N + 3, note_).font = NOTE
@@ -300,6 +335,7 @@ for d in D:
         img = XImg(p); h = 640; img.height = h; img.width = int(im.width * h / im.height)
         me.add_image(img, f"A{row + 1}"); row += 35
 
-wb._sheets = [wb["汇总"], wb["工位明细"], wb["线体基准（总长×宽）"]] + ([wb["图块包装"]] if BP else []) + [wb["参数"], wb["方法说明"]]
+wb._sheets = ([wb["汇总"], wb["工位明细"], wb["线体基准（总长×宽）"]] + ([wb["图块包装"]] if BP else [])
+              + ([wb["人工修正"]] if MAN else []) + [wb["参数"], wb["方法说明"]])
 wb.save(out)
 print("saved", out)

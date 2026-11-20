@@ -270,3 +270,62 @@ figcaption a { color: var(--accent); }
   .files th:nth-child(4), .files td:nth-child(4) { display: none; }
 }
 .live.sub { font-weight: 400; color: var(--ink-2); margin-top: 2px; }
+
+/* DXF 叠加图：缩放、图块编号、人工加入 / 剪掉区域（SVG 叠在叠加图 PNG 上，坐标 = PNG 像素） */
+.viewer { margin-top: 12px; }
+.viewer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 8px; }
+.viewer-tools button { padding: 5px 12px; }
+.viewer-tools label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); white-space: nowrap; }
+.viewer-tools .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.viewer-tools .seg button { border: 0; border-radius: 0; padding: 5px 10px; }
+.viewer-tools .seg button + button { border-left: 1px solid var(--line-2); }
+.viewer-tools button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.viewer-tools .mode-add[aria-pressed="true"] { background: #B7791F; border-color: #B7791F; }
+.viewer-tools .mode-cut[aria-pressed="true"] { background: var(--red); border-color: var(--red); }
+.viewer-sep { flex: 0 0 1px; align-self: stretch; background: var(--line); }
+/* 画区域时的提示与按钮放在图的下方：出现时不推动图，点下去的位置不变 */
+.draw-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px;
+            border: 1px solid var(--amber); border-radius: 8px; background: var(--amber-soft); }
+.draw-ctl[hidden] { display: none; }
+.draw-hint { font-size: 12.5px; color: var(--ink-2); flex: 1 1 100%; }
+.draw-ctl input[type="text"] { flex: 1 1 220px; min-width: 0; }
+.viewer-scroll { overflow: auto; max-height: 72vh; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.viewer-stage { position: relative; width: 100%; }
+.viewer-stage img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+.viewer-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.viewer-stage.drawing .viewer-svg { cursor: crosshair; }
+.viewer-svg .inst path { fill: transparent; stroke: none; cursor: pointer; }
+.viewer-svg .inst.stack2 path { fill: rgba(37, 99, 235, .22); stroke: rgba(37, 99, 235, .8); }
+.viewer-svg .inst.custom path { fill: rgba(126, 34, 206, .2); stroke: rgba(126, 34, 206, .8); }
+.viewer-svg .inst.hover path { fill: rgba(234, 120, 0, .35); stroke: #C2410C; }
+.viewer-stage.drawing .viewer-svg .inst path { cursor: crosshair; }
+.viewer-svg .edit-add { fill: rgba(250, 204, 21, .55); stroke: #A16207; }
+.viewer-svg .edit-cut { fill: rgba(220, 38, 38, .35); stroke: #B91C1C; stroke-dasharray: 6 4; }
+.viewer-svg .lbl { cursor: pointer; }
+.viewer-svg .lbl rect { fill: #fff; stroke: #12181B; }
+.viewer-svg .lbl text { fill: #12181B; font-family: var(--sans); font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+.viewer-svg .lbl.stack2 rect { fill: #2563EB; stroke: #1E40AF; }
+.viewer-svg .lbl.custom rect { fill: #7E22CE; stroke: #581C87; }
+.viewer-svg .lbl.stack2 text, .viewer-svg .lbl.custom text, .viewer-svg .lbl.hover text { fill: #fff; }
+.viewer-svg .lbl.hover rect { fill: #C2410C; stroke: #7C2D12; }
+.viewer-svg polyline.drawing-add { fill: rgba(250, 204, 21, .3); stroke: #A16207; }
+.viewer-svg polyline.drawing-cut { fill: rgba(220, 38, 38, .2); stroke: #B91C1C; }
+.viewer-svg .vertex { fill: #fff; stroke: #12181B; }
+.viewer .legend { margin: 6px 0 4px; }
+.manual-box p { margin: 6px 0; }
+.edit-list { margin: 4px 0 6px; padding-left: 18px; font-size: 13px; }
+.edit-list li { margin: 3px 0; }
+.edit-list button.link { margin-left: 6px; }
+details.block-table { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+details.block-table summary { cursor: pointer; font-weight: 600; color: var(--ink-2); }
+.block-scroll { max-height: 420px; overflow: auto; }
+table.blocks thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+table.blocks td.name { overflow-wrap: anywhere; }
+table.blocks td.mode { white-space: nowrap; }
+table.blocks td.mode select { max-width: 190px; }
+table.blocks td.mode input { width: 80px; margin-left: 6px; }
+table.blocks tr.set td { background: #EEF4FF; }
+table.blocks tr:hover td { background: #FFF1E6; }
+table.blocks tr.flash td { animation: rowflash 1.4s ease-out; }
+@keyframes rowflash { from { background: #FDBA74; } to { background: transparent; } }
+.amber { color: var(--amber); }

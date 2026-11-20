@@ -28,6 +28,8 @@ MAX_FRAME_BOXES = 10000
 # "stack2" = 可叠 2 层，该类设备的包装系数取默认包装系数的一半；数字 = 直接给该类设备的包装系数
 STACK2 = "stack2"
 BLOCK_FACTOR_RANGE = (0.05, 5.0)
+# 人工在叠加图上加入的区域（manual_edits.py）单独一组，也可以给它指定包装方式
+MANUAL_ADD_KEY = "manual:add"
 # 公摊工时按哪种面积计算（业务决定，图纸不决定）：基准 = 产线总长×宽，精细 = 各工位投影面积之和
 LABOR_AREA_BASES = ("baseline", "fine")
 
@@ -105,29 +107,45 @@ def _block_packing(raw):
     return out
 
 
+def fine_area(drawing):
+    """精细面积：各工位面积之和；未识别到工位时取整图投影面积（DXF 有人工修正时取修正后的面积）"""
+    if drawing["stations"]:
+        return sum(s["footprint_m2"] for s in drawing["stations"])
+    manual = drawing.get("manual")
+    return manual["adjusted_m2"] if manual else drawing["footprint_m2"]
+
+
 def block_groups(drawing):
-    """DXF：计入的设备按图块类型分组（打散的设备线条每团单独一组），按毛面积从大到小排列。
+    """DXF：计入的设备按图块类型分组（打散的设备线条每团单独一组），按毛面积从大到小排列并编号 1、2、3…
+    （编号与页面叠加图上的标注一致）。
 
     各图块轮廓之间有重叠（投影面积是并集），重叠部分按毛面积比例分摊，使各组面积之和 = 投影面积。
+    有人工修正时：被剪掉的部分从相应插入的毛面积中扣除（kept 比例），各组分摊“测量轮廓 − 剪掉区域”；
+    人工加入的区域单独一组（MANUAL_ADD_KEY，不编号），各组之和 = 修正后面积。
     PDF（没有图块，或已按工位分摊）返回 []。
     """
     if drawing.get("stations"):
         return []
+    manual = drawing.get("manual") or {}
+    kept = manual.get("kept") or {}
     groups = {}
     for i in drawing.get("inserts") or []:
         if i.get("cls") != "equipment" or not i.get("area_m2"):
             continue
         key = i["block"] if i.get("block") else f"loose:{i['handle']}"
-        g = groups.setdefault(key, dict(key=key, block=i.get("block"), count=0, gross_m2=0.0))
+        g = groups.setdefault(key, dict(key=key, block=i.get("block"), count=0, measured_m2=0.0, gross_m2=0.0))
         g["count"] += 1
-        g["gross_m2"] += i["area_m2"]
+        g["measured_m2"] += i["area_m2"]
+        g["gross_m2"] += i["area_m2"] * kept.get(i["handle"], 1.0)
     gross = sum(g["gross_m2"] for g in groups.values())
-    if not gross:
-        return []
-    share = drawing["footprint_m2"] / gross
-    out = sorted(groups.values(), key=lambda g: -g["gross_m2"])
-    for g in out:
-        g["area_m2"] = g["gross_m2"] * share
+    out = sorted(groups.values(), key=lambda g: (-g["measured_m2"], g["key"]))   # 编号不随人工剪切变化
+    base = manual["blocks_m2"] if manual else drawing["footprint_m2"]
+    for n, g in enumerate(out, 1):
+        g["no"] = n
+        g["area_m2"] = g["gross_m2"] * base / gross if gross else 0.0
+    if manual.get("manual_add_m2"):
+        out.append(dict(key=MANUAL_ADD_KEY, block=None, no=None, count=manual.get("n_add", 0), measured_m2=0.0,
+                        gross_m2=manual["manual_add_m2"], area_m2=manual["manual_add_m2"]))
     return out
 
 
@@ -177,8 +195,9 @@ def summarize(drawing, p, cfg):
     stations = drawing["stations"]
     # ① 基准：工作簿按 总长×总宽（各取 0.1 m）逐线体相乘再相加
     baseline = sum(l_["length_m"] * l_["width_m"] for l_ in lanes)
-    # ② 精细：各工位面积之和；未识别到工位时取整图投影面积（同一口径）
-    fine = sum(s["footprint_m2"] for s in stations) if stations else drawing["footprint_m2"]
+    # ② 精细：各工位面积之和；未识别到工位时取整图投影面积（同一口径；DXF 含人工修正）
+    fine = fine_area(drawing)
+    manual = drawing.get("manual")
     # ③ 公摊工时：工时表里钳工、电工各有一行“面积 × 系数”，按所选面积口径计算
     rf, re_ = p["fitter_hours_per_m2"], p["electrician_hours_per_m2"]
     labor_area = baseline if p["labor_area_basis"] == "baseline" else fine
@@ -223,6 +242,9 @@ def summarize(drawing, p, cfg):
         fine_source="stations" if stations else "footprint",
         baseline_m2=baseline,
         fine_m2=fine,
+        fine_measured_m2=manual["measured_m2"] if manual else fine,
+        manual_added_m2=manual["added_m2"] if manual else 0.0,
+        manual_cut_m2=manual["cut_m2"] if manual else 0.0,
         fine_vs_baseline=fine / baseline if baseline else None,
         labor_area_basis=p["labor_area_basis"],
         labor_area_m2=labor_area,
