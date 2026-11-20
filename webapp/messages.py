@@ -108,6 +108,12 @@ MESSAGES = {
     "device_not_editable": (
         "这张图的测量结果没有逐台设备的轮廓，不能点选设备改判：新建一次计算（重新测量）即可。",
         "This measurement has no per-device outlines, so devices cannot be switched on or off: start a new estimate to measure again."),
+    "pack_bad": (
+        "包装方式库的输入无效：名称不能为空，系数要在 0.05–5 之间。",
+        "Invalid packing library input: the name cannot be empty and the factor must be 0.05–5."),
+    "pack_not_found": (
+        "没有找到这条包装方式（可能已经删除）。",
+        "Packing entry not found (it may already be removed)."),
     "device_bad": (
         "设备改判无效：{detail}",
         "Invalid device change: {detail}"),

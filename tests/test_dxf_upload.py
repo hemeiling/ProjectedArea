@@ -252,3 +252,30 @@ def test_click_a_device_to_stop_counting_it_and_count_it_again(client_dir, tmp_p
         assert r.status_code == 200
     assert r.json()["estimate"]["drawings"][0]["fine_m2"] == pytest.approx(measured, abs=0.1)
     assert client.get(f"/api/jobs/{jid}/drawings/{did}/geometry").json()["withdrawn"] == 2
+
+
+def test_packing_library_remembers_and_suggests_across_jobs(client_dir, tmp_path):
+    client = client_dir
+    data = dxf_bytes(tmp_path)
+    job = wait_for(client, upload(client, data).json()["job_id"])
+    jid, did = job["id"], job["drawings"][0]["id"]
+    assert client.get("/api/packing-library").json() == []
+    # 不勾选“记住”：库里没有
+    params = dict(block_packing={did: {"MACHINE": "stack2"}})
+    assert client.post(f"/api/jobs/{jid}/estimate", json=dict(params=params)).status_code == 200
+    assert client.get("/api/packing-library").json() == []
+    # 勾选“记住”
+    assert client.post(f"/api/jobs/{jid}/estimate", json=dict(params=params, remember=True)).status_code == 200
+    lib = client.get("/api/packing-library").json()
+    assert len(lib) == 1 and lib[0]["cad_names"] == ["MACHINE"] and lib[0]["choice"] == "stack2"
+    # 同一文件的新任务：库给出建议（exact），但不自动进入计算
+    job2 = wait_for(client, submit_rows(client, [dict(sha256=sha256_bytes(data))]).json()["job_id"])
+    sg = client.get(f"/api/jobs/{job2['id']}/drawings/{job2['drawings'][0]['id']}/packing-suggestions").json()
+    assert sg["MACHINE"]["match"] == "exact" and sg["MACHINE"]["choice"] == "stack2"
+    assert job2["estimate"]["drawings"][0]["packing_source"] == "uniform"
+    # 改名、改系数、删除
+    eid = lib[0]["id"]
+    assert client.patch(f"/api/packing-library/{eid}", json=dict(name="机器", choice=0.8)).json()["choice"] == 0.8
+    assert client.patch(f"/api/packing-library/{eid}", json=dict(choice=9)).status_code == 400
+    assert client.delete(f"/api/packing-library/{eid}").status_code == 200
+    assert client.delete(f"/api/packing-library/{eid}").status_code == 404 and client.get("/api/packing-library").json() == []

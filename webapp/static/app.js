@@ -413,6 +413,7 @@
         <label class="chk"><input type="checkbox" data-act="labels"> ${esc(t("viewer.labels"))}</label>
         <span class="seg" role="group" aria-label="${esc(t("viewer.zoom"))}">${ZOOMS.map((z) =>
           `<button type="button" data-zoom="${z}">${esc(z === 1 ? t("viewer.fit") : `${z}×`)}</button>`).join("")}</span>
+        <span class="note label-hidden"></span>
         <span class="viewer-sep"></span>
         <button type="button" data-act="add" class="mode-add">${esc(t("viewer.add"))}</button>
         <button type="button" data-act="cut" class="mode-cut">${esc(t("viewer.cut"))}</button>
@@ -440,12 +441,15 @@
       table = `<aside class="viewer-side block-table">
         <h4>${esc(t("blocks.title", { n: groups.filter((g) => g.key !== "manual:add").length, k: set }))}</h4>
         <p class="result-strip"></p>
-        <p class="note">${esc(t("pack.note"))}</p>
+        <div class="moved-box" hidden></div>
+        <details class="pack-help"><summary>${esc(t("pack.help"))}</summary><p class="note">${esc(t("pack.note"))}</p></details>
         <div class="table-wrap block-scroll"><table class="blocks"><thead><tr>
           <th class="num">${esc(t("blocks.no"))}</th><th>${esc(t("blocks.name"))}</th><th class="num">${esc(t("blocks.count"))}</th>
           <th class="num">${esc(t("blocks.area"))}</th><th class="num">${esc(t("blocks.cum"))}</th><th>${esc(t("blocks.mode"))}</th>
         </tr></thead><tbody></tbody></table></div>
-        <div class="actions"><button type="button" class="primary" data-act="apply">${esc(t("blocks.apply"))}</button>
+        <div class="actions"><button type="button" data-act="adopt-lib" hidden></button>
+          <button type="button" class="primary" data-act="apply">${esc(t("blocks.apply"))}</button>
+          <label class="chk remember"><input type="checkbox" class="remember-chk" checked> ${esc(t("lib.remember"))}</label>
           <span class="ok block-msg" role="status"></span></div>
       </aside>`;
     }
@@ -460,6 +464,10 @@
       const v = (state.view[did] ||= { zoom: 1, labels: true, hover: null, pop: null });
       v.pop = null;
       renderBlockRows(el, did, col);
+      if (col && col.block_groups) {
+        fetch(`/api/jobs/${job.id}/drawings/${encodeURIComponent(did)}/packing-suggestions`).then((r) => (r.ok ? r.json() : {}))
+          .then((sg) => { v.sugg = sg; renderBlockRows(el, did, col); }).catch(() => {});
+      }
       const apply = el.querySelector('[data-act="apply"]');
       if (apply) {
         apply.addEventListener("click", async () => {
@@ -471,7 +479,7 @@
       }
       if (!d || !d.editable) continue;
       wireViewerTools(el, did, v);
-      loadGeometry(job.id, did).then((geo) => { if (geo) { v.geo = geo; drawViewer(el, did); renderManualBox(el, did, d, geo); } })
+      loadGeometry(job.id, did).then((geo) => { if (geo) { v.geo = geo; drawViewer(el, did); renderManualBox(el, did, d, geo); renderMovedBox(el, did, geo); } })
         .catch(() => { el.querySelector(".viewer-error").textContent = t("viewer.failed"); });
     }
   }
@@ -493,6 +501,7 @@
     if (strip) strip.textContent = t("blocks.result", { mid: num(col.boxes_mid, 0), lo: num(col.boxes_low, 0), hi: num(col.boxes_high, 0), a: num(col.packed_m2, 1) });
     const pack = Number(((state.job.estimate || {}).params || {}).packaging_factor) || 1;
     let cum = 0;
+    const v0 = state.view[did] || {};
     body.textContent = "";
     groups.forEach((g, i) => {
       // 旧版本算的结果没有 no：同样按面积从大到小排列，序号即编号
@@ -500,7 +509,9 @@
       cum += g.measured_m2 ?? g.gross_m2 ?? 0;
       const tr = document.createElement("tr");
       tr.dataset.key = g.key;
-      tr.innerHTML = `<td class="num">${no ? esc(no) : "—"}</td><td class="name">${esc(blockLabel(g))}</td>
+      const sg = (v0.sugg || {})[g.key];
+      const std = sg && sg.name !== blockLabel(g) && (sg.match === "exact" || (v0.merged || {})[g.key]);
+      tr.innerHTML = `<td class="num">${no ? esc(no) : "—"}</td><td class="name">${std ? `${esc(sg.name)} <small class="cad">${esc(blockLabel(g))}</small>` : esc(blockLabel(g))}<div class="lib-tag"></div></td>
         <td class="num">${esc(g.count)}</td><td class="num">${num(g.area_m2, 1)}</td>
         <td class="num">${no ? `${num((cum / measured) * 100, 0)}%` : ""}</td><td class="mode"></td>`;
       const cur = (state.packs[did] || {})[g.key];
@@ -508,7 +519,7 @@
       mode.setAttribute("aria-label", t("blocks.mode"));
       mode.innerHTML = `<option value="">${esc(t("blocks.default", { f: num(pack, 2) }))}</option>
         <option value="stack2">${esc(t("blocks.stack2", { f: num(pack / 2, 3) }))}</option>
-        <option value="custom">${esc(t("pack.custom"))}</option>`;
+        <option value="custom">${esc(t("blocks.custom"))}</option>`;
       mode.value = cur === undefined ? "" : cur === "stack2" ? "stack2" : "custom";
       const factor = document.createElement("input");
       factor.type = "number"; factor.min = "0.05"; factor.max = "5"; factor.step = "0.05"; factor.inputMode = "decimal";
@@ -526,20 +537,75 @@
         state.packsDirty[did] = true;
         const msgEl = el.querySelector(".block-msg");
         if (msgEl) { msgEl.className = "amber block-msg"; msgEl.textContent = t("blocks.dirty"); }
+        const lt = tr.querySelector(".lib-tag"), sg0 = (v0.sugg || {})[g.key];
+        if (lt && sg0 && !(v0.ignore || {})[g.key]) renderLibTag(el, did, lt, g, sg0, state.packs[did] && state.packs[did][g.key]);
+        updateAdoptAll(el, did, col);
         drawViewer(el, did);
       };
       mode.addEventListener("change", sync);
       factor.addEventListener("input", sync);
       tr.classList.toggle("set", cur !== undefined);
       tr.querySelector("td.mode").append(mode, factor);
+      if (sg && !(v0.ignore || {})[g.key]) renderLibTag(el, did, tr.querySelector(".lib-tag"), g, sg, cur);
       tr.addEventListener("mouseenter", () => { (state.view[did] || {}).hover = g.key; drawViewer(el, did); });
       tr.addEventListener("mouseleave", () => { (state.view[did] || {}).hover = null; drawViewer(el, did); });
       body.appendChild(tr);
     });
+    updateAdoptAll(el, did, col);
     const v = state.view[did] || {};
     const msgEl = el.querySelector(".block-msg");
     if (msgEl && state.packsDirty[did]) { msgEl.className = "amber block-msg"; msgEl.textContent = t("blocks.dirty"); }
     else if (msgEl && v.flash) { msgEl.textContent = v.flash; v.flash = null; }
+  }
+
+  // ---- 包装方式库：表格里的“库”标记（库里的设置只是建议，点“采用”后还要点重新计算才进入计算）
+  const libValue = (sg) => (sg.choice === "stack2" ? "stack2" : String(sg.choice));
+  const libText = (c) => (c === "stack2" ? t("pack.stack2") : t("lib.factor", { f: num(Number(c), 2) }));
+
+  // “采用库里的设置（N 条）”：只算库里完全匹配、而表格里还没采用的
+  function updateAdoptAll(el, did, col) {
+    const adoptAll = el.querySelector('[data-act="adopt-lib"]');
+    if (!adoptAll) return;
+    const todo = Object.entries((state.view[did] || {}).sugg || {}).filter(([k, sg]) => sg.match === "exact" && (state.packs[did] || {})[k] !== libValue(sg));
+    adoptAll.hidden = !todo.length;
+    adoptAll.textContent = t("lib.adoptAll", { n: todo.length });
+    adoptAll.onclick = () => { for (const [k, sg] of todo) setPack(did, k, libValue(sg)); renderBlockRows(el, did, col); drawViewer(el, did); markDirty(el, did); };
+  }
+
+  function setPack(did, key, val) {
+    const packs = (state.packs[did] ||= {});
+    packs[key] = val;
+    state.packsDirty[did] = true;
+  }
+
+  function markDirty(el, did) {
+    const msgEl = el.querySelector(".block-msg");
+    if (msgEl) { msgEl.className = "amber block-msg"; msgEl.textContent = t("blocks.dirty"); }
+  }
+
+  function renderLibTag(el, did, host, g, sg, cur) {
+    const same = cur === libValue(sg);
+    const v = state.view[did];
+    const btn = (act, label) => `<button type="button" class="link" data-lib="${act}">${esc(label)}</button>`;
+    if (sg.match === "exact") host.innerHTML = `<span class="tag ok">${esc(t("lib.badge"))}</span> ${esc(libText(sg.choice))} ${same ? `<span class="muted">${esc(t("lib.adopted"))}</span>` : btn("adopt", t("lib.adopt"))}`;
+    else if (!(v.merged || {})[g.key]) host.innerHTML = `<span class="tag warn">${esc(t("lib.similarBadge"))}</span> ${esc(t("lib.similar", { n: sg.name, c: libText(sg.choice) }))} ${btn("merge", t("lib.merge"))} ${btn("ignore", t("lib.ignore"))}`;
+    else host.innerHTML = `<span class="tag ok">${esc(t("lib.badge"))}</span> ${esc(libText(sg.choice))} ${same ? `<span class="muted">${esc(t("lib.adopted"))}</span>` : btn("adopt", t("lib.adopt"))}`;
+    host.onclick = async (ev) => {
+      const b = ev.target.closest("[data-lib]");
+      if (!b) return;
+      const col = ((state.job.estimate && state.job.estimate.drawings) || []).find((c) => String(c.id) === did);
+      if (b.dataset.lib === "ignore") { (v.ignore ||= {})[g.key] = true; renderBlockRows(el, did, col); return; }
+      if (b.dataset.lib === "merge") {                      // 确认“相似的图块是同一类”：库里记下这个图块名，以后按完全相同匹配
+        b.disabled = true;
+        try {
+          const res = await fetch(`/api/packing-library/${encodeURIComponent(sg.id)}/alias`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ block: g.block }) });
+          if (!res.ok) throw new Error(String(res.status));
+          (v.merged ||= {})[g.key] = true;
+        } catch (_) { b.disabled = false; el.querySelector(".viewer-error").textContent = t("err.network"); return; }
+      }
+      setPack(did, g.key, libValue(sg));
+      renderBlockRows(el, did, col); drawViewer(el, did); markDirty(el, did);
+    };
   }
 
   function wireViewerTools(el, did, v) {
@@ -653,6 +719,29 @@
     await afterEdit(body, did);
   }
 
+  // 人工移出 / 拉入的设备单独列在表格上方：每条一个“拉回”按钮（撤销这条改判，记录保留），悬停时图上高亮对应设备
+  function renderMovedBox(el, did, geo) {
+    const box = el.querySelector(".moved-box");
+    if (!box) return;
+    const list = (geo.devices || []).filter((e) => e.status === "applied" || e.status === undefined || e.status === null);
+    box.hidden = !list.length;
+    box.innerHTML = list.length ? `<h5>${esc(t("moved.title", { n: list.length }))}</h5><ul>${list.map((e) => `<li data-eid="${esc(e.id)}">
+      <span class="tag ${e.op === "include" ? "warn" : "bad"}">${esc(t(e.op === "include" ? "dev.tagIn" : "dev.tagOut"))}</span>
+      <span class="mv-name">${esc(e.block || t("pack.loose", { h: e.handle }))}${e.scope === "block" ? esc(t("moved.all", { n: e.n_devices ?? 0 })) : ""}</span>
+      <span class="muted">${num(e.effect_m2 || 0, 1)} m²</span>
+      <button type="button" class="link" data-act="pull">${esc(t(e.op === "include" ? "moved.undoIn" : "moved.pull"))}</button></li>`).join("")}</ul>` : "";
+    const v = state.view[did];
+    for (const li of box.querySelectorAll("li")) {
+      li.addEventListener("mouseenter", () => { v.hoverEdit = li.dataset.eid; drawViewer(el, did); });
+      li.addEventListener("mouseleave", () => { v.hoverEdit = null; drawViewer(el, did); });
+      li.querySelector("button").addEventListener("click", async (ev) => {
+        ev.target.disabled = true;
+        try { v.hoverEdit = null; await withdrawEdit(did, li.dataset.eid); }
+        catch (e) { el.querySelector(".viewer-error").textContent = e.message || t("err.network"); ev.target.disabled = false; }
+      });
+    }
+  }
+
   function renderManualBox(el, did, d, geo) {
     const box = el.querySelector(".manual-box");
     const m = d.manual;
@@ -710,7 +799,7 @@
 
   // 编号标签：先放在设备中心；与已放的标签重叠就换到附近空位，离设备中心较远时画一条细引线
   function labelsSvg(geo, groups, packs, v, k) {
-    const r = 9 * k, fs = 11 * k, items = [];
+    const small = v.zoom === 1, r = (small ? 6.5 : 9) * k, fs = (small ? 8.5 : 11) * k, items = [];
     for (const ins of geo.instances) {
       const g = groups.get(ins.key);
       if (ins.cls !== "equipment" || !g || !g.no || !ins.outline.length) continue;
@@ -725,16 +814,18 @@
       && !placed.some((q) => Math.abs(cx - q.cx) < (w + q.w) / 2 + pad && Math.abs(cy - q.cy) < 2 * r + pad);
     const step = 2.2 * r, dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [.7, .7], [-.7, .7], [.7, -.7], [-.7, -.7]];
     const out = [];
+    let hidden = 0;
     for (const it of items) {
-      let cx = it.x, cy = it.y;
-      if (!free(cx, cy, it.w)) {
-        search: for (let ring = 1; ring <= 4; ring++) {
+      let cx = it.x, cy = it.y, ok = free(cx, cy, it.w);
+      if (!ok) {
+        search: for (let ring = 1; ring <= 3; ring++) {
           for (const [dx, dy] of dirs) {
             const px = it.x + dx * step * ring, py = it.y + dy * step * ring;
-            if (free(px, py, it.w)) { cx = px; cy = py; break search; }
+            if (free(px, py, it.w)) { cx = px; cy = py; ok = true; break search; }
           }
         }
       }
+      if (!ok) { hidden++; continue; }                     // 放不下、又不想叠在别的标签上：放大后再显示
       placed.push({ cx, cy, w: it.w });
       const { ins, g } = it;
       const cls = v.hover === ins.key ? "lbl hover" : packs[ins.key] === "stack2" ? "lbl stack2" : packs[ins.key] !== undefined ? "lbl custom" : "lbl";
@@ -744,6 +835,7 @@
           <rect x="${cx - it.w / 2}" y="${cy - r}" width="${it.w}" height="${2 * r}" rx="${r}" style="stroke-width:${k}px"/>
           <text x="${cx}" y="${cy}" style="font-size:${fs}px">${esc(g.no)}</text></g>`);
     }
+    v.hiddenLabels = hidden;
     return out.join("");
   }
 
@@ -812,12 +904,15 @@
         changed ? (ins.cls === "equipment" ? "man-in" : "man-out") : "",
         v.hover === ins.key && ins.cls === "equipment" ? "hover"
           : ins.cls !== "equipment" ? "" : packs[ins.key] === "stack2" ? "stack2" : packs[ins.key] !== undefined ? "custom" : "",
-        v.pop && v.pop.handle === ins.handle ? "picked" : ""].filter(Boolean).join(" ");
+        (v.pop && v.pop.handle === ins.handle) || (v.hoverEdit && ins.edit === v.hoverEdit) ? "picked" : ""].filter(Boolean).join(" ");
       const g = groups.get(ins.key);
       const title = ins.cls === "equipment" && g ? `<title>${esc(blockTitle(g))}</title>` : `<title>${esc(ins.block || ins.handle)}</title>`;
       parts.push(`<g class="${cls}" data-key="${esc(ins.key)}" data-h="${esc(ins.handle)}">${title}${ins.outline.map((r) => `<path d="${ringPath(r)}" style="stroke-width:${1.5 * k}px"/>`).join("")}</g>`);
     }
+    v.hiddenLabels = 0;
     if (v.labels) parts.push(labelsSvg(geo, groups, packs, v, k));
+    const hl = el.querySelector(".label-hidden");
+    if (hl) hl.textContent = v.hiddenLabels ? t("viewer.hiddenLabels", { n: v.hiddenLabels }) : "";
     svg.innerHTML = `<g class="layer-main">${parts.join("")}</g><g class="layer-draw"></g>`;
     drawLayer(el, did);
   }
@@ -1506,7 +1601,8 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
     try {
       const res = await fetch(`/api/jobs/${state.job.id}/estimate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ params: { ...readParams($("recalcGrid")), frame_boxes: readFrameBoxes(), block_packing: readBlockPacking() } }),
+        body: JSON.stringify({ params: { ...readParams($("recalcGrid")), frame_boxes: readFrameBoxes(), block_packing: readBlockPacking() },
+          remember: [...document.querySelectorAll(".remember-chk")].some((c) => c.checked) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) { $("recalcError").textContent = say(body.error) || `HTTP ${res.status}`; return false; }
@@ -1514,6 +1610,7 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
       initPacks(body);
       renderJob(body);
       buildFrameGrid(body);
+      loadPackLib();
       $("recalcMsg").textContent = t("recalc.done");
       return true;
     } catch (_) {
@@ -1684,12 +1781,73 @@ ${warnings ? `<section class="alert alert-amber"><strong>${esc(t("warnings.title
     });
   }
 
+  // ------------------------------------------------------------ 包装方式库（按图块名，所有图纸共用）
+  async function loadPackLib() {
+    try {
+      const res = await fetch("/api/packing-library");
+      state.packLib = res.ok ? await res.json() : [];
+    } catch (_) { state.packLib = []; }
+    renderPackLib();
+  }
+
+  function renderPackLib() {
+    const body = $("packLibRows");
+    if (!body) return;
+    const list = state.packLib || [];
+    $("packLibEmpty").hidden = list.length > 0;
+    body.textContent = "";
+    const patch = async (e, payload) => {
+      $("packLibError").textContent = "";
+      const res = await fetch(`/api/packing-library/${encodeURIComponent(e.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) { $("packLibError").textContent = say(out.error) || `HTTP ${res.status}`; return false; }
+      return true;
+    };
+    for (const e of list) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="pl-name"><input type="text" maxlength="120" aria-label="${esc(t("packlib.name"))}"></td>
+        <td class="pl-cad">${esc(e.cad_names.join("、"))}</td><td class="num">${num(e.ref_area_m2, 2)}</td><td class="pl-mode"></td>
+        <td class="muted">${esc(e.source && e.source.drawing || "—")}<br>${esc(when(e.updated_at))}</td>
+        <td><button type="button" class="link" data-act="del">${esc(t("packlib.delete"))}</button></td>`;
+      const name = tr.querySelector("input");
+      name.value = e.name;
+      name.addEventListener("change", async () => { if (await patch(e, { name: name.value })) e.name = name.value.trim(); else name.value = e.name; });
+      const mode = document.createElement("select");
+      mode.innerHTML = `<option value="stack2">${esc(t("pack.stack2"))}</option><option value="custom">${esc(t("blocks.custom"))}</option>`;
+      const factor = document.createElement("input");
+      factor.type = "number"; factor.min = "0.05"; factor.max = "5"; factor.step = "0.05"; factor.className = "pl-factor";
+      mode.value = e.choice === "stack2" ? "stack2" : "custom";
+      factor.value = e.choice === "stack2" ? "" : e.choice;
+      factor.hidden = mode.value !== "custom";
+      const save = async () => {
+        factor.hidden = mode.value !== "custom";
+        const choice = mode.value === "stack2" ? "stack2" : factor.value;
+        if (choice === "" || !packFactorOk(choice) && choice !== "stack2") return;
+        if (await patch(e, { choice })) e.choice = choice === "stack2" ? choice : Number(choice);
+      };
+      mode.addEventListener("change", save); factor.addEventListener("change", save);
+      tr.querySelector(".pl-mode").append(mode, factor);
+      tr.querySelector('[data-act="del"]').addEventListener("click", async (ev) => {
+        const b = ev.target;
+        if (b.dataset.armed !== "1") {                       // 两步确认
+          b.dataset.armed = "1"; b.textContent = t("manual.confirm");
+          setTimeout(() => { if (b.isConnected) { b.dataset.armed = ""; b.textContent = t("packlib.delete"); } }, 6000);
+          return;
+        }
+        const res = await fetch(`/api/packing-library/${encodeURIComponent(e.id)}`, { method: "DELETE" });
+        if (res.ok) loadPackLib(); else $("packLibError").textContent = t("err.network");
+      });
+      body.appendChild(tr);
+    }
+  }
+
   async function start() {
     state.lang = storedLang() === "en" ? "en" : "zh";
     wire();
     try { await loadMeta(); } catch (_) { $("uploadError").textContent = t("err.network"); }
     applyI18n();
     loadLibrary();
+    loadPackLib();
     loadSystem();
     route();
   }

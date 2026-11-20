@@ -32,6 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from webapp import dxfinfo
 from webapp import jobs as J
 from webapp.library import Library
+from webapp import packlib
+from webapp.packlib import PackLibrary, choice_ok
 from webapp.messages import msg
 import estimate
 import manual_edits
@@ -190,6 +192,7 @@ def create_app(data_dir=None, desktop=False):
     """desktop=True：桌面版（只监听本机，界面显示数据目录并把“服务器”称为“本机”）"""
     data_dir = data_dir or os.environ.get("LAYOUT_DATA_DIR") or os.path.join(J.ESTIMATOR_DIR, "data")
     store, lib = J.JobStore(data_dir), Library(data_dir)
+    packs = PackLibrary(data_dir)
     worker = J.Worker(store, lib)
     recalc_lock = threading.Lock()
     password = os.environ.get("ACCESS_PASSWORD", "")
@@ -362,6 +365,66 @@ def create_app(data_dir=None, desktop=False):
         day = dt.datetime.fromisoformat(job["created_at"]).strftime("%Y%m%d")
         return FileResponse(path, media_type=XLSX, filename=f"{WORKBOOK_NAME}_{day}.xlsx", headers=NO_CACHE)
 
+    # ------------------------------------------------------------ 包装方式库（按图块名，所有图纸共用）
+    def _pack_view(e):
+        return {k: v for k, v in e.items() if k != "history"} | dict(n_history=len(e["history"]))
+
+    @app.get("/api/packing-library")
+    def packing_library():
+        return [_pack_view(e) for e in sorted(packs.entries(), key=lambda e: e["name"])]
+
+    @app.patch("/api/packing-library/{eid}")
+    def packing_library_edit(eid: str, payload: dict = Body(...)):
+        name, choice = payload.get("name"), payload.get("choice")
+        if (name is not None and not str(name).strip()) or (choice is not None and not choice_ok(choice)):
+            raise ApiError(400, msg("pack_bad"))
+        e = packs.update(eid, name=None if name is None else str(name).strip(), choice=None if choice is None else (
+            packlib.STACK2 if choice == packlib.STACK2 else float(choice)))
+        if e is None:
+            raise ApiError(404, msg("pack_not_found"))
+        return _pack_view(e)
+
+    @app.delete("/api/packing-library/{eid}")
+    def packing_library_delete(eid: str):
+        if not packs.withdraw(eid):
+            raise ApiError(404, msg("pack_not_found"))
+        return dict(ok=True)
+
+    @app.post("/api/packing-library/{eid}/alias")
+    def packing_library_alias(eid: str, payload: dict = Body(...)):
+        block = str(payload.get("block") or "").strip()
+        if not block:
+            raise ApiError(400, msg("pack_bad"))
+        e = packs.add_alias(eid, block)
+        if e is None:
+            raise ApiError(404, msg("pack_not_found"))
+        return _pack_view(e)
+
+    @app.get("/api/jobs/{jid}/drawings/{did}/packing-suggestions")
+    def packing_suggestions(jid: str, did: str):
+        """这张图的各图块类型在库里的匹配：{图块键: {id, name, choice, match: exact | similar, ref_area_m2}}"""
+        job = _job_or_404(jid)
+        col = next((c for c in (job.get("estimate") or {}).get("drawings", []) if str(c["id"]) == did), None)
+        if col is None:
+            raise ApiError(404, msg("job_not_found"))
+        entries, out = packs.entries(), {}
+        for g in col.get("block_groups") or []:
+            if not g.get("block") or not g.get("count"):
+                continue
+            hit = packs.match(g["block"], g["measured_m2"] / g["count"], entries)
+            if hit:
+                e, how = hit
+                out[g["key"]] = dict(id=e["id"], name=e["name"], choice=e["choice"], match=how, ref_area_m2=e["ref_area_m2"])
+        return JSONResponse(out, headers=NO_CACHE)
+
+    def _remember_packing(job, p):
+        cols = {str(c["id"]): c for c in (job.get("estimate") or {}).get("drawings", [])}
+        names = {d["id"]: d["name"] for d in job["drawings"]}
+        for did, chosen in (p.get("block_packing") or {}).items():
+            for g in (cols.get(did) or {}).get("block_groups") or []:
+                if g["key"] in chosen and g.get("block") and g.get("count"):
+                    packs.remember(g["block"], g["measured_m2"] / g["count"], chosen[g["key"]], job["id"], names.get(did))
+
     @app.post("/api/jobs/{jid}/estimate")
     def recalculate(jid: str, payload: dict = Body(...)):
         job = _job_or_404(jid)
@@ -376,6 +439,8 @@ def create_app(data_dir=None, desktop=False):
                 job = J.recalculate(store, lib, jid, p)
             except J.Failed as e:
                 raise ApiError(500, e.message)
+        if payload.get("remember"):                        # 勾选了“记住到包装方式库”：把本次选的包装方式记入库
+            _remember_packing(job, p)
         return JSONResponse(_job_view(job), headers=NO_CACHE)
 
     # ------------------------------------------------------------ 叠加图上的图块编号与人工修正（DXF）
